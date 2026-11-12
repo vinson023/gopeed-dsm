@@ -1,0 +1,125 @@
+# Gopeed for Synology DSM 7
+
+把 [Gopeed](https://github.com/GopeedLab/gopeed) 官方 headless Web 版打包成群晖 DSM 7
+的套件（`.spk`）。纯 Native：不依赖 Docker / Node / Python，二进制静态链接，装完在
+套件中心或 DSM 桌面点图标即用。
+
+- 内置 Gopeed `1.9.3`（`cmd/web`，`-tags nosqlite,web`，内嵌 Flutter Web UI）
+- 提供 `x86_64` 与 `armv8` 两个套件（含原生二进制，必须按机型选择）
+- 安装向导可设：登录账号密码、默认下载目录、BT / ED2K 监听端口
+- 下载文件属主是套件用户（`gopeed`），可在 File Station 中正常管理
+- 卸载时可选择是否一并清空配置与任务数据
+
+> **验证状态**：包结构与全部脚本已在真实 Linux 上按 DSM 生命周期完整跑通
+> （安装回调 → 启动 → 下载 → 重启 → 停止），但**尚未在真实群晖设备上安装验证**。
+> 详见 [docs/dsm-port.md](docs/dsm-port.md)。
+
+## 安装
+
+1. 到 [Releases](../../releases) 下载对应架构的套件：
+   - Intel / AMD 机型 → `gopeed-<version>-x86_64.spk`
+   - ARM 机型（armv8：rtd1296 / rtd1619 / armada37xx 等）→ `gopeed-<version>-armv8.spk`
+2. DSM →「套件中心 → 手动安装」，选择 `.spk`
+3. 按向导填写（都有默认值）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| 登录账号 | `admin` | Gopeed 页面登录名 |
+| 登录密码 | `gopeed` | **建议改掉**；留空 = 关闭登录保护 |
+| 默认下载目录 | 空 | 留空 = 共享文件夹 `gopeed/downloads` |
+| BT 端口 | `51413` | 避开 6881-6889（部分运营商限速） |
+| ED2K TCP / UDP | `4662` / `4672` | 固定才可能拿到 eMule HighID |
+
+4. 装完访问 `http://<NAS地址>:38099`
+
+> **端口固定为 38099**：DSM 在安装时把 `adminport` 写进套件信息并据此生成入口，
+> 装完无法在界面上改。需要别的端口请自行构建（见下文）。
+
+### 下载到自己的共享文件夹
+
+套件默认以 `package` 用户运行，对共享文件夹没有写权限。要用自己的文件夹：
+
+1. 「套件中心 → Gopeed → 权限」里勾选目标共享文件夹（读写）；
+2. 在安装向导的「默认下载目录」填它的绝对路径，例如 `/volume1/downloads`。
+
+否则服务启动会失败，日志（`/volume1/@appdata/gopeed/gopeed.log`）会写明目录不可写。
+
+### 外网 / HTTPS 访问
+
+DSM 的桌面图标固定打开 `http://<host>:38099`，从 https 的 DSM 点开会跳到一个 http 页面。
+想走 https，用 DSM 自带的**反向代理**（控制面板 → 登录门户 → 高级 → 反向代理）：
+
+| 来源 | 目标 |
+|---|---|
+| `https://nas.example.com:443` | `http://localhost:38099` |
+
+DSM 会用自己的证书终结 TLS，Gopeed 侧不需要任何改动。
+
+## 构建
+
+需要 Python 3；不需要 Synology 工具链（`.spk` 就是一个固定布局的 tar.gz）。
+
+```bash
+# 1. 取上游 headless 二进制（官方 release），放到
+#    dist/<goarch>/gopeed-web-v<version>-linux-<goarch>/gopeed
+#    amd64 -> dist/amd64/...   arm64 -> dist/arm64/...
+
+# 2. 生成套件（默认端口 38099）
+python build.py
+python build.py --port 38123        # 换端口
+
+# 产物
+#   build/gopeed-<version>-x86_64.spk
+#   build/gopeed-<version>-armv8.spk
+```
+
+`build.py` 会把端口写入 `INFO`（`adminport` / `checkport`）、`scripts/preinst`、
+`scripts/postinst`、`scripts/start-stop-status` 和向导文案，并计算 `package.tgz`
+的 MD5 写进 `INFO` 的 `checksum`。
+
+## 目录
+
+```
+.
+├── build.py                    生成两个架构的 .spk
+├── src/
+│   ├── INFO                    套件元数据（arch / adminport / checksum 由 build.py 注入）
+│   ├── PACKAGE_ICON*.PNG       套件中心图标（64 / 256）
+│   ├── LICENSE                 Gopeed 的 GPL-3.0
+│   ├── conf/privilege          run-as=package（DSM 7 不允许未签名包要 root）
+│   ├── conf/resource           data-share: gopeed
+│   ├── scripts/                preinst / postinst / start-stop-status / ...
+│   ├── WIZARD_UIFILES/         install_uifile / uninstall_uifile
+│   └── package/                打包进 package.tgz 的内容（bin/gopeed）
+└── docs/dsm-port.md            移植说明与实测记录
+```
+
+## 关键设计
+
+1. **必须 `run-as=package`**：DSM 7 会拒绝安装"要求 root 权限且未签名"的套件。
+   因此不能像 Docker 那样以 root 启动再降权，整个服务以套件用户 `gopeed` 运行。
+2. **下载目录靠 `config.json` 首启播种**：引擎在 `-c` 指定的文件里读 `downloadConfig`
+   作为初始配置，但只在存储为空时生效；之后每次启动必须**删掉**该文件，否则它会把
+   用户后来改的配置（包括 `maxRunning`）覆盖成零值。
+3. **改过的下载目录靠 REST 补同步**：`@appdata` 在卸载后保留，重装时存储已存在，
+   首启播种不会再生效。启动后用 `curl` 调 `GET/PUT /api/v1/config` 把向导里的目录写进去
+   （只改 `downloadDir`，其余字段保持原样）。
+4. **IPv6 双栈**：Gopeed 用 `"%s:%d"` 拼地址，所以传 `[::]`（带方括号）而不是 `::`，
+   在 `bindv6only=0` 的内核上是双栈监听；否则退回 `0.0.0.0`。
+5. **端口占用提前拦截**：`preinst` 里检查 38099，占用则中止安装（装完再改端口只能重装）。
+
+## 已知限制
+
+- **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
+- **未在真机验证**：安装/卸载向导、桌面图标、`data-share` 的实际表现依赖 DSM 运行时，
+  建议先在测试机上安装确认后再长期使用。
+- **ARM 包未在真机运行**：仅通过架构字段与静态校验。
+- **套件用户与共享文件夹**：默认只能写 `gopeed` 共享文件夹；其他目录需要在
+  「套件中心 → 权限」里授权。
+- **重装会重写配置**：安装向导的值会覆盖 `@appconf/gopeed/gopeed.conf`（保留任务数据，
+  但账号密码/下载目录以本次向导为准）。
+
+## 许可
+
+打包脚本与套件配置以 **GPL-3.0** 发布；`src/LICENSE` 是随包分发所必需的 Gopeed 许可证。
+Gopeed 版权归 [GopeedLab](https://github.com/GopeedLab/gopeed) 所有。

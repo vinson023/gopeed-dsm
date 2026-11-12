@@ -1,0 +1,116 @@
+[
+  {
+    "step_title": "访问与安全",
+    "items": [
+      {
+        "type": "textfield",
+        "desc": "登录账号",
+        "subitems": [
+          {
+            "key": "wizard_web_user",
+            "desc": "打开 Gopeed 页面时的账号，默认 admin",
+            "defaultValue": "admin",
+            "validator": {
+              "allowBlank": false,
+              "minLength": 1,
+              "maxLength": 32,
+              "regex": {
+                "expr": "/^[A-Za-z0-9_.-]{1,32}$/",
+                "errorText": "只能包含字母、数字、下划线、点、短横线"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "type": "password",
+        "desc": "登录密码",
+        "subitems": [
+          {
+            "key": "wizard_web_pass",
+            "desc": "留空表示关闭登录保护（不建议）。该端口不经过 DSM 登录校验，请务必设置强密码。",
+            "defaultValue": "gopeed",
+            "validator": {
+              "allowBlank": true,
+              "maxLength": 64
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "step_title": "下载目录与端口",
+    "items": [
+      {
+        "type": "textfield",
+        "desc": "默认下载目录",
+        "subitems": [
+          {
+            "key": "wizard_download_dir",
+            "desc": "留空 = 共享文件夹 gopeed/downloads。改用其他共享文件夹前，请先在「套件中心 → Gopeed → 权限」里授权，否则套件会启动失败。访问端口固定为 __PORT__，不能在这里修改。",
+            "defaultValue": "",
+            "validator": {
+              "allowBlank": true,
+              "maxLength": 255
+            }
+          }
+        ]
+      },
+      {
+        "type": "textfield",
+        "desc": "BitTorrent 监听端口",
+        "subitems": [
+          {
+            "key": "wizard_bt_port",
+            "desc": "默认 51413，刻意避开 6881-6889（部分运营商限速）。IPv4 需在路由器上把该端口 TCP+UDP 都转发到 NAS。",
+            "defaultValue": "51413",
+            "validator": {
+              "allowBlank": false,
+              "regex": {
+                "expr": "/^[0-9]{2,5}$/",
+                "errorText": "端口只能填数字"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "type": "textfield",
+        "desc": "ED2K TCP 端口",
+        "subitems": [
+          {
+            "key": "wizard_ed2k_port",
+            "desc": "默认 4662。只有端口固定且能被外部连到，eMule 网络才会给你 HighID；随机端口会掉成 LowID。",
+            "defaultValue": "4662",
+            "validator": {
+              "allowBlank": false,
+              "regex": {
+                "expr": "/^[0-9]{2,5}$/",
+                "errorText": "端口只能填数字"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "type": "textfield",
+        "desc": "ED2K UDP 端口",
+        "subitems": [
+          {
+            "key": "wizard_ed2k_udp_port",
+            "desc": "默认 4672，建议与 TCP 端口一起转发。",
+            "defaultValue": "4672",
+            "validator": {
+              "allowBlank": false,
+              "regex": {
+                "expr": "/^[0-9]{2,5}$/",
+                "errorText": "端口只能填数字"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

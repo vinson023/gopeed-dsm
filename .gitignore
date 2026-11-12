@@ -1,0 +1,5 @@
+build/
+dist/
+*.spk
+__pycache__/
+*.py[cod]

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Runs before uninstallation. The service is already stopped by Package Center.
+# Downloaded files are never touched; only package config/data is optional.
+set -u
+
+VAR="${SYNOPKG_PKGVAR:-/var/packages/gopeed/var}"
+ETC="${SYNOPKG_PKGETC:-/var/packages/gopeed/etc}"
+
+if [ "${wizard_purge_data:-false}" = "true" ]; then
+    rm -rf "$VAR"/* "$VAR"/.[!.]* 2>/dev/null
+    rm -rf "$ETC"/* "$ETC"/.[!.]* 2>/dev/null
+fi
+
+exit 0

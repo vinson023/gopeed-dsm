@@ -1,0 +1,16 @@
+#!/bin/bash
+# Runs before installation. The desktop entry URL is built from INFO's
+# adminport, so a busy port cannot be fixed after the fact - refuse early.
+set -u
+
+PORT="__PORT__"
+
+if command -v netstat >/dev/null 2>&1; then
+    if netstat -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$"; then
+        echo "端口 ${PORT} 已被其他服务占用，请先释放该端口再安装 Gopeed。" \
+            > "${SYNOPKG_TEMP_LOGFILE:-/dev/stderr}"
+        exit 1
+    fi
+fi
+
+exit 0

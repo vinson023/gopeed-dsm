@@ -1,0 +1,10 @@
+#!/bin/bash
+# Runs after uninstallation. Nothing to keep in tmp; the download share stays
+# intact on purpose (it may contain finished downloads).
+set -u
+
+if [ -n "${SYNOPKG_PKGTMP:-}" ] && [ -d "${SYNOPKG_PKGTMP}" ]; then
+    rm -rf "${SYNOPKG_PKGTMP:?}"/* 2>/dev/null
+fi
+
+exit 0

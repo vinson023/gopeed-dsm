@@ -1,0 +1,23 @@
+[
+  {
+    "step_title": "卸载选项",
+    "items": [
+      {
+        "type": "singleselect",
+        "desc": "应用配置与数据（下载好的文件始终保留，不受此选项影响）",
+        "subitems": [
+          {
+            "key": "wizard_keep_data",
+            "desc": "保留配置与任务数据（推荐，重装后设置和任务都还在）",
+            "defaultValue": true
+          },
+          {
+            "key": "wizard_purge_data",
+            "desc": "不保留，全部清空（账号密码、下载目录、任务列表、缓存与日志都删除）",
+            "defaultValue": false
+          }
+        ]
+      }
+    ]
+  }
+]

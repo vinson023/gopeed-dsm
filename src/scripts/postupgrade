@@ -1,0 +1,18 @@
+#!/bin/bash
+# Runs after an upgrade. The data dir (@appdata) and config (@appconf) survive,
+# only the payload in target was replaced - make sure ownership/permissions are
+# still consistent with the package user.
+set -u
+
+VAR="${SYNOPKG_PKGVAR:-/var/packages/gopeed/var}"
+ETC="${SYNOPKG_PKGETC:-/var/packages/gopeed/etc}"
+DEST="${SYNOPKG_PKGDEST:-/var/packages/gopeed/target}"
+
+chmod 755 "${DEST}/bin/gopeed" 2>/dev/null
+
+OWNER="$(stat -c %U "$VAR" 2>/dev/null)"
+if [ -n "$OWNER" ]; then
+    chown -R "$OWNER" "$VAR" "$ETC" 2>/dev/null
+fi
+
+exit 0

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Runs before an upgrade; Package Center stops the service, this is a safety net.
+set -u
+
+DEST="${SYNOPKG_PKGDEST:-/var/packages/gopeed/target}"
+if [ -x "${DEST}/../scripts/start-stop-status" ]; then
+    "${DEST}/../scripts/start-stop-status" stop >/dev/null 2>&1
+elif [ -x "${DEST}/scripts/start-stop-status" ]; then
+    "${DEST}/scripts/start-stop-status" stop >/dev/null 2>&1
+fi
+
+exit 0

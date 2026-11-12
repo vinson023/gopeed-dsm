@@ -1,0 +1,229 @@
+#!/bin/bash
+# start / stop / status for the Gopeed engine.
+# DSM runs this script as the package user (conf/privilege: run-as=package),
+# so no privilege dropping is needed here.
+set -u
+
+PKG="gopeed"
+DEST="${SYNOPKG_PKGDEST:-/var/packages/${PKG}/target}"
+VAR="${SYNOPKG_PKGVAR:-/var/packages/${PKG}/var}"
+ETC="${SYNOPKG_PKGETC:-/var/packages/${PKG}/etc}"
+
+BIN="${DEST}/bin/gopeed"
+CONF="${ETC}/gopeed.conf"
+LOG="${VAR}/gopeed.log"
+PID_FILE="${VAR}/gopeed.pid"
+
+WEB_PORT="__PORT__"
+WEB_USER="admin"
+WEB_PASS=""
+DOWNLOAD_DIR=""
+BT_PORT="51413"
+ED2K_PORT="4662"
+ED2K_UDP_PORT="4672"
+AUTO_START="true"
+
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" >> "$LOG" 2>/dev/null
+}
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid="$(head -n 1 "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -r "/proc/${pid}/cmdline" ]; then
+        tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -q "bin/gopeed" || return 1
+    fi
+    return 0
+}
+
+port_in_use() {
+    netstat -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"
+}
+
+# The engine only applies GOPEED_DOWNLOAD_CONFIG when its storage is created,
+# so a re-install with an existing @appdata would keep the old directory.
+# Nudge it through the REST API once the engine is up (best effort, needs curl).
+sync_download_dir() {
+    [ -n "$DOWNLOAD_DIR" ] || return 0
+    [ -n "$WEB_PASS" ] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    case "$WEB_PASS" in
+        *'"'*|*'\'*) return 0 ;;      # do not build JSON with unescaped quotes
+    esac
+
+    local base="http://127.0.0.1:${WEB_PORT}"
+    local token raw data body
+    token="$(curl -s --max-time 5 -X POST -H 'Content-Type: application/json' \
+        -d "{\"username\":\"${WEB_USER}\",\"password\":\"${WEB_PASS}\"}" \
+        "${base}/api/web/login" 2>/dev/null | sed -n 's/.*"data":"\([^"]*\)".*/\1/p')"
+    [ -n "$token" ] || return 0
+
+    raw="$(curl -s --max-time 5 -H "Authorization: Bearer ${token}" \
+        "${base}/api/v1/config" 2>/dev/null)"
+    [ -n "$raw" ] || return 0
+
+    # PUT expects the config object itself, not the {code,msg,data} envelope -
+    # sending the envelope resets the whole config to zero values.
+    data="$(printf '%s' "$raw" | sed -n 's/.*"data":\({.*}\)}[^}]*$/\1/p')"
+    case "$data" in
+        *'"downloadDir"'*) ;;
+        *) return 0 ;;
+    esac
+
+    case "$data" in
+        *"\"downloadDir\":\"${DOWNLOAD_DIR}\""*) return 0 ;;
+    esac
+
+    body="$(printf '%s' "$data" | sed "s#\"downloadDir\":\"[^\"]*\"#\"downloadDir\":\"${DOWNLOAD_DIR}\"#")"
+    curl -s --max-time 8 -X PUT -H "Authorization: Bearer ${token}" \
+        -H 'Content-Type: application/json' -d "$body" \
+        "${base}/api/v1/config" >/dev/null 2>&1
+    log "download dir synced to ${DOWNLOAD_DIR}"
+}
+
+start_service() {
+    if is_running; then
+        log "already running"
+        return 0
+    fi
+    [ -x "$BIN" ] || { log "missing binary: ${BIN}"; return 1; }
+
+    mkdir -p "$VAR/tmp" "$VAR/home" 2>/dev/null
+
+    # The engine treats `downloadConfig` from -c as the *initial* config and
+    # ignores it later, but this build still merges it on every start and would
+    # reset maxRunning to 0 (tasks then sit in "wait" forever). Only seed it
+    # when the storage is empty, i.e. the very first start.
+    local fresh=0
+    if [ ! -d "$VAR/storage" ] || [ -z "$(ls -A "$VAR/storage" 2>/dev/null)" ]; then
+        fresh=1
+    fi
+    mkdir -p "$VAR/storage" 2>/dev/null
+
+    if [ -z "$DOWNLOAD_DIR" ]; then
+        DOWNLOAD_DIR="$(printf '%s' "$VAR" | cut -d/ -f1-2)/@appshare/${PKG}/downloads"
+    fi
+    if [ ! -d "$DOWNLOAD_DIR" ]; then
+        mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
+    fi
+    if [ ! -w "$DOWNLOAD_DIR" ]; then
+        log "download dir not writable: ${DOWNLOAD_DIR} (grant it in Package Center > ${PKG} > Permission)"
+        return 1
+    fi
+
+    if port_in_use "$WEB_PORT"; then
+        log "port ${WEB_PORT} is already in use: $(netstat -tlnp 2>/dev/null | grep -E "[:.]${WEB_PORT}\$" | head -n 1)"
+        return 1
+    fi
+
+    # Gopeed joins address and port as "%s:%d", so an IPv6 wildcard needs the
+    # bracketed form; "[::]" + bindv6only=0 gives a dual-stack listener.
+    local addr="0.0.0.0"
+    if [ "$(cat /proc/sys/net/ipv6/bindv6only 2>/dev/null || echo 1)" = "0" ]; then
+        addr="[::]"
+    fi
+
+    local dlcfg
+    dlcfg="{\"downloadDir\":\"${DOWNLOAD_DIR}\",\"autoStartTasks\":${AUTO_START},\"protocolConfig\":{\"bt\":{\"listenPort\":${BT_PORT}},\"ed2k\":{\"listenPort\":${ED2K_PORT},\"udpPort\":${ED2K_UDP_PORT}}}}"
+
+    # The engine reads `downloadConfig` from -c only when its storage is created
+    # (GOPEED_DOWNLOAD_CONFIG is not applied on this build), so seed it here.
+    # Once @appdata/storage exists the value is ignored, and sync_download_dir
+    # below takes care of the download directory.
+    if [ "$fresh" = "1" ]; then
+        cat > "$VAR/config.json" <<JSON
+{
+  "downloadConfig": ${dlcfg}
+}
+JSON
+        log "seeding initial config (storage was empty)"
+    else
+        # never let a stale seed file override the configuration the user has
+        # since changed inside Gopeed
+        rm -f "$VAR/config.json"
+    fi
+
+    log "starting: port=${WEB_PORT} addr=${addr} downloads=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
+
+    (
+        cd "$DEST" || exit 1
+        export GOPEED_TEMP_DIR="$VAR/tmp"
+        export HOME="$VAR/home"
+        if [ -n "$WEB_PASS" ]; then
+            nohup "$BIN" -A "$addr" -P "$WEB_PORT" -d "$VAR/storage" -c "$VAR/config.json" \
+                -u "$WEB_USER" -p "$WEB_PASS" >> "$LOG" 2>&1 &
+        else
+            nohup "$BIN" -A "$addr" -P "$WEB_PORT" -d "$VAR/storage" -c "$VAR/config.json" \
+                >> "$LOG" 2>&1 &
+        fi
+        echo $! > "$PID_FILE"
+    )
+
+    local i=0
+    while [ "$i" -lt 15 ]; do
+        sleep 1
+        is_running && break
+        i=$((i + 1))
+    done
+
+    if ! is_running; then
+        log "start failed: $(tail -n 5 "$LOG" 2>/dev/null | tr '\n' ' ')"
+        rm -f "$PID_FILE"
+        return 1
+    fi
+
+    sync_download_dir
+    log "started pid=$(cat "$PID_FILE" 2>/dev/null)"
+    return 0
+}
+
+stop_service() {
+    if is_running; then
+        local pid i=0
+        pid="$(head -n 1 "$PID_FILE" | tr -d '[:space:]')"
+        log "stopping pid=${pid}"
+        kill -TERM "$pid" 2>/dev/null
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            log "force kill pid=${pid}"
+            kill -KILL "$pid" 2>/dev/null
+        fi
+    fi
+    rm -f "$PID_FILE"
+    return 0
+}
+
+case "${1:-status}" in
+    start)
+        start_service
+        exit $?
+        ;;
+    stop)
+        stop_service
+        exit $?
+        ;;
+    status)
+        if is_running; then
+            exit 0
+        fi
+        exit 1
+        ;;
+    restart)
+        stop_service
+        start_service
+        exit $?
+        ;;
+    *)
+        echo "usage: $0 {start|stop|status|restart}" >&2
+        exit 1
+        ;;
+esac
