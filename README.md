@@ -46,16 +46,26 @@
 
 否则服务启动会失败，日志（`/volume1/@appdata/gopeed/gopeed.log`）会写明目录不可写。
 
-### 外网 / HTTPS 访问
+### HTTPS
 
-DSM 的桌面图标固定打开 `http://<host>:38099`，从 https 的 DSM 点开会跳到一个 http 页面。
-想走 https，用 DSM 自带的**反向代理**（控制面板 → 登录门户 → 高级 → 反向代理）：
+桌面图标会按 DSM 页面的协议加载 iframe：http 打开的 DSM 用 `http://host:38099`，
+https 打开的 DSM 用 `https://host:38099`（同一个端口，隧道自动分流）。
 
-| 来源 | 目标 |
-|---|---|
-| `https://nas.example.com:443` | `http://localhost:38099` |
+https 要真正可用，需要两件事：
 
-DSM 会用自己的证书终结 TLS，Gopeed 侧不需要任何改动。
+1. **DSM 的默认证书是受信任的证书**（例如 DDNS 域名上的 Let's Encrypt）。
+   群晖自签证书在 iframe 里会被浏览器直接拒绝，且不会给"继续访问"的机会 ——
+   这种情况下桌面窗口会显示一段说明，而不是空白。
+2. **把证书复制到套件目录**（私钥是 `600 root`，套件用户读不到，必须手动一次）：
+
+```bash
+sudo cp /usr/syno/etc/certificate/system/default/fullchain.pem /volume1/@appdata/gopeed/tls/cert.pem
+sudo cp /usr/syno/etc/certificate/system/default/privkey.pem   /volume1/@appdata/gopeed/tls/privkey.pem
+sudo chown -R gopeed /volume1/@appdata/gopeed/tls
+sudo synopkg restart gopeed
+```
+
+没有证书时隧道自动降级为纯 HTTP，不影响局域网使用。
 
 ## 构建
 
@@ -113,21 +123,28 @@ python build.py --port 38123        # 换端口
 4. **IPv6 双栈**：Gopeed 用 `"%s:%d"` 拼地址，所以传 `[::]`（带方括号）而不是 `::`，
    在 `bindv6only=0` 的内核上是双栈监听；否则退回 `0.0.0.0`。
 5. **端口占用提前拦截**：`preinst` 里检查 38099，占用则中止安装（装完再改端口只能重装）。
-6. **DSM 桌面集成**：`dsmuidir="ui"` 让 `package.tgz` 里的 `ui/` 被软链到
+6. **HTTP / HTTPS 同端口**：引擎绑 `127.0.0.1:38100`，`bin/gopeed-tunnel.py` 监听
+   38099，按首字节分流（`0x16` = TLS）→ 同一个入口既能 http 也能 https，
+   iframe 跟随 DSM 页面的协议即可，不需要反向代理。
+   **但证书只能是 DSM 的默认证书**，而私钥是 `600 root`，套件以 package 用户运行读不到，
+   所以需要手动复制一次（见「HTTPS」一节）；没有证书时自动降级为 HTTP。
+7. **DSM 桌面集成**：`dsmuidir="ui"` 让 `package.tgz` 里的 `ui/` 被软链到
    `/usr/syno/synoman/webman/3rdparty/gopeed/`，`dsmappname` 指向 Ext 应用类。
    DSM 7.2 起 `config` 里 `type: legacy|url` 不再决定打开方式，必须在 `ui/Gopeed.js`
    里定义 `SYNO.SDS.Gopeed.Application` / `MainWindow`，由 `getMainHtml()` 返回 iframe，
    才能在 DSM 窗口内打开。**用 https 打开 DSM 时 iframe 会被混合内容拦截**，
    页面会给出提示（改用 http 访问 DSM，或配反向代理）。
-7. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
+8. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
    都报「套件文件格式不正确」。只有里面的 `package.tgz` 才压缩。这条最容易踩，
    详见 [docs/dsm-port.md](docs/dsm-port.md) 第三节。
 
 ## 已知限制
 
 - **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
-- **部分界面未验证**：安装/卸载向导的字段渲染、主菜单图标、共享文件夹授权尚未在真机点过
-  （安装是通过 `synopkg` 命令行完成的），首次使用请留意。
+- **https 需要受信任证书**：自签证书在 iframe 里无法加载，桌面会显示说明页；
+  用 `http://<nas>:5000` 打开 DSM 则没有这个限制。
+- **证书续期后要重新复制**：Let's Encrypt 续期会替换私钥，续期后重跑上面那三条
+  `cp`/`chown` 命令（或重装套件）才会生效。
 - **极少数情况下首次建任务会崩**：上游 1.9.3 在 `Fetcher.Resolve` 出现过一次
   nil pointer panic，重启后同样的任务正常完成，之后未再复现。
 - **ARM 包未在真机运行**：仅通过架构字段与静态校验。

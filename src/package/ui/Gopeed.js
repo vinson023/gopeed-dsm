@@ -1,15 +1,23 @@
 /*
  * DSM 7 desktop integration for Gopeed.
  *
- * Since DSM 7.2 the old `"type": "legacy"` trick no longer decides whether an
- * app opens inside the DSM shell, so the app is declared as an Ext application
- * (INFO: dsmappname="SYNO.SDS.Gopeed.Application") and the window renders our
- * own iframe. Gopeed keeps running on its own port; nothing is proxied through
- * webman.
+ * DSM 7.2+ no longer decides "open in a new tab vs. embed" from
+ * `"type": "legacy"` in config, so the app is declared as an Ext application
+ * (INFO: dsmappname="SYNO.SDS.Gopeed.Application") and this file renders the
+ * Gopeed UI inside the DSM window.
+ *
+ * Two things matter here:
+ *  - the iframe must be a real Ext element (autoEl), otherwise the container
+ *    collapses to 0 height and the window looks empty;
+ *  - Gopeed only speaks HTTP. Over https DSM the iframe would be blocked as
+ *    mixed content (http) or by an untrusted certificate (https), so we probe
+ *    first and explain instead of showing a blank window.
  */
 Ext.namespace("SYNO.SDS.Gopeed.Utils");
 
 Ext.apply(SYNO.SDS.Gopeed.Utils, function () {
+    var IFRAME_STYLE = "width:100%;height:100%;border:0;margin:0;display:block;background:#fff";
+
     return {
         port: "__PORT__",
 
@@ -18,31 +26,96 @@ Ext.apply(SYNO.SDS.Gopeed.Utils, function () {
             return proto + "//" + window.location.hostname + ":" + this.port + "/";
         },
 
-        // Gopeed only speaks HTTP. If DSM itself is served over https the
-        // iframe would be blocked as mixed content, so explain that instead of
-        // showing a blank window.
-        getMainHtml: function () {
+        iframeHtml: function () {
+            return '<iframe src="' + this.url() + '" title="Gopeed" style="' + IFRAME_STYLE + '" ' +
+                'allow="clipboard-read; clipboard-write; fullscreen"></iframe>';
+        },
+
+        noticeHtml: function (reason) {
             var host = window.location.hostname;
-            if (window.location.protocol === "https:") {
-                return '' +
-                    '<div style="padding:28px;font:14px/1.8 -apple-system,\'Segoe UI\',Arial,sans-serif;color:#333">' +
-                    '<h3 style="margin:0 0 10px">Gopeed 无法在当前 HTTPS 的 DSM 中内嵌显示</h3>' +
-                    '<p style="margin:0 0 14px">Gopeed 只提供 HTTP 服务，而当前 DSM 通过 HTTPS 打开，' +
-                    '浏览器会以「混合内容」为由拦截嵌入。</p>' +
-                    '<p style="margin:0 0 6px">两个解决办法：</p>' +
+            var title, body;
+
+            if (reason === "probing") {
+                title = "正在检测 Gopeed 是否可用…";
+                body = '<p style="margin:0">马上就好。</p>';
+            } else if (reason === "tls") {
+                title = "无法在 HTTPS 页面里嵌入 Gopeed";
+                body = '<p style="margin:0 0 14px">浏览器拒绝加载 <code>https://' + host + ':' + this.port +
+                    '</code>。Gopeed 使用的是 DSM 的默认证书，如果它还是群晖自签证书，' +
+                    'iframe 里不会出现"继续访问"的选项，只会一片空白。</p>' +
+                    '<p style="margin:0 0 6px">任选一种：</p>' +
                     '<ol style="margin:0 0 14px;padding-left:22px">' +
-                    '<li>改用 <a href="http://' + host + ':5000" target="_blank" rel="noopener">http://' + host +
-                    ':5000</a> 打开 DSM，再点图标即可；</li>' +
-                    '<li>或用「控制面板 → 登录门户 → 高级 → 反向代理」把 DSM 的 HTTPS 端口代理到 ' +
-                    '<code>http://localhost:' + this.port + '</code>。</li>' +
-                    '</ol>' +
-                    '<p><a href="http://' + host + ':' + this.port + '" target="_blank" rel="noopener">' +
-                    '在新窗口打开 Gopeed（HTTP）</a></p>' +
-                    '</div>';
+                    '<li>把受信任的证书（如 Let\'s Encrypt）在「控制面板 → 安全性 → 证书」里设为默认，再重装本套件；</li>' +
+                    '<li>用 <a href="http://' + host + ':5000" target="_blank" rel="noopener">http://' + host +
+                    ':5000</a> 打开 DSM，主菜单里的 Gopeed 会直接嵌入显示；</li>' +
+                    '<li>或直接访问 <a href="http://' + host + ':' + this.port + '" target="_blank" rel="noopener">' +
+                    'http://' + host + ':' + this.port + '</a>。</li></ol>';
+            } else {
+                title = "Gopeed 还没准备好";
+                body = '<p style="margin:0 0 14px">套件可能仍在启动，等几秒后关掉窗口重新打开；' +
+                    '若一直如此，请到「套件中心」确认 Gopeed 状态是"运行中"。</p>' +
+                    '<p style="margin:0"><a href="http://' + host + ':' + this.port +
+                    '" target="_blank" rel="noopener">在新窗口打开 Gopeed</a></p>';
             }
-            return '<iframe src="' + this.url() + '" title="Gopeed" ' +
-                'allow="clipboard-read; clipboard-write; fullscreen" ' +
-                'style="width:100%;height:100%;border:0;margin:0;display:block"></iframe>';
+
+            return '<div style="padding:28px;font:14px/1.8 -apple-system,\'Segoe UI\',Arial,sans-serif;color:#333">' +
+                '<h3 style="margin:0 0 10px">' + title + '</h3>' + body + '</div>';
+        },
+
+        // Over https a self-signed certificate fails silently inside an iframe,
+        // so probe the API first: success -> embed, failure -> explain.
+        probe: function (cmp) {
+            var self = this;
+            var settled = false;
+
+            function finish(html) {
+                if (settled) return;
+                settled = true;
+                cmp.update(html);
+            }
+
+            var timer = setTimeout(function () {
+                finish(self.noticeHtml("startup"));
+            }, 5000);
+
+            try {
+                fetch(self.url() + "api/v1/info", { mode: "no-cors", cache: "no-store" })
+                    .then(function () {
+                        clearTimeout(timer);
+                        finish(self.iframeHtml());
+                    })
+                    .catch(function () {
+                        clearTimeout(timer);
+                        finish(self.noticeHtml("tls"));
+                    });
+            } catch (e) {
+                clearTimeout(timer);
+                finish(self.noticeHtml("tls"));
+            }
+        },
+
+        component: function () {
+            var self = this;
+            if (window.location.protocol !== "https:") {
+                return {
+                    xtype: "component",
+                    autoEl: {
+                        tag: "iframe",
+                        src: self.url(),
+                        frameborder: "0",
+                        style: IFRAME_STYLE
+                    }
+                };
+            }
+            return {
+                xtype: "component",
+                autoEl: { tag: "div", style: "height:100%", html: self.noticeHtml("probing") },
+                listeners: {
+                    afterrender: function (cmp) {
+                        self.probe(cmp);
+                    }
+                }
+            };
         }
     };
 }());
@@ -68,7 +141,7 @@ Ext.define("SYNO.SDS.Gopeed.MainWindow", {
             minimizable: true,
             width: 1200,
             height: 800,
-            html: MY.Utils.getMainHtml()
+            items: [MY.Utils.component()]
         }, a));
         MY.Utils.ApplicationWindow = this;
     },

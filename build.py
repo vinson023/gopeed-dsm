@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-14"
-CHANGELOG = "1.9.3-14 DSM desktop icon + in-window iframe"
+PKG_VERSION = "1.9.3-15"
+CHANGELOG = "1.9.3-15 HTTP+HTTPS on one port, fixed iframe height"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {
@@ -49,12 +49,18 @@ DEFAULT_PORT = "38099"
 def is_exec(arcname):
     return (
         arcname.startswith("scripts/")
-        or arcname == "bin/gopeed"
+        or arcname in ("bin/gopeed", "bin/gopeed-tunnel.py")
         or arcname.endswith(".sh")
     )
 
 
 def mode_filter(ti):
+    # never ship python bytecode caches
+    if "__pycache__" in ti.name or ti.name.endswith(".pyc"):
+        return None
+    # never ship python bytecode caches
+    if "__pycache__" in ti.name or ti.name.endswith(".pyc"):
+        return None
     ti.mode = 0o755 if (ti.isdir() or is_exec(ti.name)) else 0o644
     ti.uid = 0
     ti.gid = 0

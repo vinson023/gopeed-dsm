@@ -37,6 +37,22 @@ AUTO_START="true"
 EOF
 chmod 600 "$ETC/gopeed.conf"
 
+# Copy DSM's default certificate so the unprivileged tunnel can read it.
+# Renewals are picked up on the next install/upgrade (the key is root-only).
+CERT_SRC="/usr/syno/etc/certificate/system/default"
+if [ -r "$CERT_SRC/privkey.pem" ]; then
+    mkdir -p "$VAR/tls"
+    if [ -r "$CERT_SRC/fullchain.pem" ]; then
+        cp -f "$CERT_SRC/fullchain.pem" "$VAR/tls/cert.pem" 2>/dev/null
+    else
+        cp -f "$CERT_SRC/cert.pem" "$VAR/tls/cert.pem" 2>/dev/null
+    fi
+    cp -f "$CERT_SRC/privkey.pem" "$VAR/tls/privkey.pem" 2>/dev/null
+    chmod 600 "$VAR/tls/cert.pem" "$VAR/tls/privkey.pem" 2>/dev/null
+    echo "$(date '+%Y-%m-%d %H:%M:%S') certificate copied from ${CERT_SRC}" \
+        >> "$VAR/install.log" 2>/dev/null
+fi
+
 # everything the service touches must belong to the package user
 OWNER="$(stat -c %U "$VAR" 2>/dev/null)"
 if [ -n "$OWNER" ]; then

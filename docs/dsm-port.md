@@ -145,6 +145,49 @@ curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gope
 `getMainHtml()` 会返回一段说明而不是空白的 iframe，并提示改用
 `http://host:5000` 访问 DSM，或给 38099 配反向代理。
 
+## 三之三、HTTP 与 HTTPS 同端口
+
+DSM 桌面 iframe 继承 DSM 页面的协议：页面是 https，iframe 就必须是 https；页面是 http，
+iframe 用 http。Gopeed 只有 HTTP，所以套件里带了一个小隧道：
+
+```
+浏览器 ──► :38099 (gopeed-tunnel.py) ──► 127.0.0.1:38100 (gopeed)
+                 │ 首字节 0x16 ? TLS : 明文
+```
+
+- 有证书 → 同时支持 http 和 https；没有证书 → 降级为纯 HTTP（引擎直接绑 38099）
+- 隧道进程和引擎都以套件用户运行，隧道双栈监听 `0.0.0.0` + `[::]`
+
+**证书是硬限制**：DSM 的默认证书在 `/usr/syno/etc/certificate/system/default/`，
+`privkey.pem` 权限是 `600 root:root`。DSM 7 的 `postinst` 以 **package 用户** 运行
+（实测 `sudo -l -U gopeed` → not allowed），所以套件自己复制不了证书，必须在安装后
+由管理员手动复制一次：
+
+```bash
+sudo cp /usr/syno/etc/certificate/system/default/fullchain.pem /volume1/@appdata/gopeed/tls/cert.pem
+sudo cp /usr/syno/etc/certificate/system/default/privkey.pem   /volume1/@appdata/gopeed/tls/privkey.pem
+sudo chown -R gopeed /volume1/@appdata/gopeed/tls
+sudo synopkg restart gopeed
+```
+
+另外一个前提：**自签证书在 iframe 里没有用**。浏览器对 iframe 内的证书错误不会弹
+"继续访问"，直接阻断。所以 https 场景必须配受信任的证书（Let's Encrypt 等）。
+
+## 三之四、iframe 高度为 0 的坑
+
+第一版把 iframe 作为字符串塞进 `html:` 配置，DSM 窗口里一片空白 ——
+Ext 容器的 html 子节点不会自动撑满，iframe 的 `height:100%` 失去参照，算出 0 高度。
+
+正确做法是把 iframe 做成真正的 Ext 元素，让 `layout: "fit"` 给它分配尺寸：
+
+```javascript
+{
+    xtype: "component",
+    autoEl: { tag: "iframe", src: url, frameborder: "0",
+              style: "width:100%;height:100%;border:0" }
+}
+```
+
 ## 四、启动参数
 
 ```
