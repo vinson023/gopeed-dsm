@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-21"
-CHANGELOG = "1.9.3-21 ship the UI fonts (Roboto/Gopeed/Cupertino) so text renders; shorter wizard labels"
+PKG_VERSION = "1.9.3-22"
+CHANGELOG = "1.9.3-22 bundle the Noto Sans SC fallback shards so Chinese text renders without internet access"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

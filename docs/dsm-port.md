@@ -372,6 +372,35 @@ Font family Gopeed not found (404) at assets/assets/fonts/Gopeed.ttf
 实测现象：界面布局、图标、按钮全都正常，**唯独没有任何文字** —— 因为 CanvasKit
 没有可用字形。
 
+**6.1）中文必须单独带 Noto Sans SC 分片**
+
+Roboto 只有拉丁字形，汉字要靠 CanvasKit 的 `FontFallbackManager` 现场下载。
+`main.dart.js` 里硬编码的 fallback base 是 **`assets/gstatic/`**，Noto Sans SC
+在 Google Fonts 上被切成 **101 个 woff2 分片**（`notosanssc/v37/<hash>.<n>.woff2`）。
+
+如果 NAS 或浏览器访问不了 `fonts.gstatic.com`，中文全部渲染成 **方块**（英文正常），
+这就是"中文变方块"的原因。做法是把 101 个分片全部下载进
+`ui/web/assets/gstatic/notosanssc/v37/`（约 2.4 MB），fallback 会自动命中本地文件：
+
+```python
+import concurrent.futures, os, re, urllib.request
+src = open("main.dart.js", encoding="utf-8", errors="replace").read()
+paths = sorted(set(re.findall(r"notosanssc/v37/[A-Za-z0-9_.-]+\.woff2", src)))
+os.makedirs("assets/gstatic/notosanssc/v37", exist_ok=True)
+def fetch(p):
+    dst = os.path.join("assets/gstatic", p)
+    with urllib.request.urlopen("https://fonts.gstatic.com/s/" + p, timeout=30) as r:
+        open(dst, "wb").write(r.read())
+with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+    list(ex.map(fetch, paths))
+```
+
+同样的思路适用于繁体（`notosanstc`，105 片）、日文（`notosansjp`，124 片）、
+韩文（`notosanskr`，124 片）—— 只做简体的话带 `notosanssc` 就够。
+
+> 注意：这些分片是**浏览器**下载的，不是 NAS 下载的。NAS 能访问 gstatic
+> 不代表用户的浏览器能访问，所以必须本地化。
+
 **7）安装向导的 desc 必须短**
 
 `WIZARD_UIFILES/install_uifile` 里 `subitems[].desc` 渲染在输入框左侧、**单行**，
