@@ -48,8 +48,9 @@
 
 ### HTTPS
 
-桌面窗口里直接内嵌 Gopeed（同源 iframe），API 通过隧道带 CORS 头访问 38099。
-如果用 https 打开 DSM，iframe 也是 https，隧道会在同一个端口上按协议分流。
+桌面窗口里直接内嵌 Gopeed（同源 iframe），API 走同源的 `api.cgi` 转发到引擎。
+因为前端和接口都在 DSM 自己的 origin 上，**http 和 https 都能正常使用**，
+不需要证书、不需要反向代理。
 
 https 要真正可用，需要两件事：
 
@@ -133,8 +134,11 @@ python build.py --port 38123        # 换端口
    DSM 的响应头带 `Content-Security-Policy: ... frame-src 'self' ...`，
    而 `'self'` 包含**端口** —— 指向 `http://nas:38099` 的 iframe 会被浏览器直接拦掉，
    窗口全白。所以前端整包（`ui/app/`，12 MB）随套件分发，iframe 走同源路径
-   `/webman/3rdparty/gopeed/app/index.html`；API 仍由 38099 提供，
-   由隧道注入 CORS 头（DSM 的 `connect-src` 允许任意 http/https）。
+   `/webman/3rdparty/gopeed/app/index.html`；API 也走同源
+   `/webman/3rdparty/gopeed/api.cgi/api/...`（DSM 会在该目录下执行 `.cgi`），
+   由 `ui/api.cgi` 转发到 127.0.0.1:38099。
+   **http 和 https 因此都能用**，不需要证书、TLS 隧道或 CORS ——
+   这和 arc-control 等第三方套件的做法一致。
 8. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
    都报「套件文件格式不正确」。只有里面的 `package.tgz` 才压缩。这条最容易踩，
    详见 [docs/dsm-port.md](docs/dsm-port.md) 第三节。
@@ -144,6 +148,8 @@ python build.py --port 38123        # 换端口
 - **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
 - **前端资源随包分发**：因为必须同源，`ui/app/` 里带了一份完整的 Flutter web 构建
   （约 12 MB），套件体积因此从 38 MB 涨到 42 MB。
+- **API 走 CGI 转发**：每个请求会 fork 一个 `api.cgi` 进程（Python 约 25 ms）。
+  Gopeed 前端是定时轮询，实测无感；如果将来做高频实时推送需要另想办法。
 - **https 需要受信任证书**：自签证书会触发浏览器警告，需要手动确认一次。
 - **证书续期后要重新复制**：Let's Encrypt 续期会替换私钥，续期后重跑上面那三条
   `cp`/`chown` 命令（或重装套件）才会生效。

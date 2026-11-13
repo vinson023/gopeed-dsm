@@ -197,19 +197,22 @@ X-Frame-Options: SAMEORIGIN
 2. `connect-src` 却是 **`http: https:` 全放开** —— 也就是说同源页面里的
    JS 可以自由 fetch 到 38099，只是需要 CORS 头。
 
-所以唯一可行的结构是：
+所以唯一可行的结构是「全部走 DSM 自己的 origin」：
 
 ```
 iframe（同源）  /webman/3rdparty/gopeed/app/index.html
       │  静态资源由 DSM nginx 直接从 target/ui/app/ 提供
       ▼
    Gopeed 前端（Flutter）
-      │  XHR/fetch → http://nas:38099/api/...
+      │  XHR/fetch → /webman/3rdparty/gopeed/api.cgi/api/...
       ▼
-   gopeed-tunnel.py（注入 Access-Control-Allow-*）
+   api.cgi（DSM 在 webman/3rdparty 下执行 CGI，先降权到 gopeed）
       ▼
-   gopeed 引擎（127.0.0.1:38100）
+   gopeed 引擎（127.0.0.1:38099）
 ```
+
+同源意味着：**http 和 https 自动都可用**，不需要证书、不需要 TLS 隧道、
+不需要 CORS —— 浏览器根本没看到跨域请求。
 
 试过并排除的其它路子：
 
@@ -221,11 +224,44 @@ iframe（同源）  /webman/3rdparty/gopeed/app/index.html
 | `data:` / `blob:` iframe | ❌ CSP 允许，但子页面继承父 CSP，`script-src 'self'` 不允许加载 38099 的 JS |
 | 窗口里塞 `<iframe>` 字符串（`html:`） | ❌ Ext 容器不给子节点分配高度，iframe 算出 0 |
 
-## 三之四、同源方案怎么落地
+## 三之四、同源方案怎么落地（参考 arc-control）
+
+### 别人是怎么做到的
+
+这台 NAS 上装过一个第三方套件 `arc-control`，它在 http 和 https 下都能正常打开。
+它的做法是：**前端静态文件 + CGI 都在自己的 `ui/` 目录里**，由 DSM 自己提供和执行。
+
+```js
+// /var/packages/arc-control/target/app/dsm-wrapper.js
+items: [{ xtype: "box", autoEl: {
+    tag: "iframe",
+    src: "/webman/3rdparty/arc-control/ui/index.html?v=" + Date.now()
+}}]
+```
+
+它的前端调接口也是同源路径：
+
+```
+/webman/3rdparty/arc-control/scripts/api.cgi
+```
+
+关键事实：**DSM 的 nginx 会在 `/webman/3rdparty/<pkg>/` 下执行 `.cgi` 文件**，
+而且 `PATH_INFO`、`QUERY_STRING`、`REQUEST_METHOD`、`CONTENT_LENGTH` 都正常传入
+（已实测）。所以套件不需要第二个端口、不需要反代、不需要证书。
+
+实测 `PATH_INFO`：
+
+```
+GET /webman/3rdparty/gopeed/api.cgi/api/v1/tasks?status=done
+  -> PATH_INFO    = /api/v1/tasks
+  -> QUERY_STRING = status=done
+```
+
+### 四步落地
 
 **1）前端资源随包分发**
 
-上游的 web 构建是 Go 内嵌的，磁盘上没有独立文件。构建时从运行中的引擎抓取：
+上游的 web 构建是 Go 内嵌的，磁盘上没有独立文件，构建时从运行中的引擎抓取：
 
 ```bash
 B=http://127.0.0.1:38099
@@ -237,41 +273,54 @@ for p in index.html flutter_bootstrap.js main.dart.js manifest.json favicon.png 
     mkdir -p "ui/app/$(dirname $p)"
     curl -s -o "ui/app/$p" "$B/$p"
 done
-# 注意 index.html 会被 301 到 /，取的时候要 -L，或者直接抓 /
+# 注意 /index.html 会 301 到 /，要 -L 或者直接抓 /
 ```
 
-好消息：**Gopeed 的前端本来就用相对路径**（`index.html` 里没有 `<base href="/">`，
+好消息：**Gopeed 前端本来就用相对路径**（`index.html` 里没有 `<base href="/">`，
 `flutter_bootstrap.js` 用 `document.baseURI` 解析），所以放进子目录不会 404。
 
-**2）`index.html` 里改写 API 地址**
+**2）`index.html` 把 API 指到同源 CGI**
 
-Gopeed 的请求路径是**混着写的**：`api/v1/resolve`（相对）和 `/api/v1/tasks`（绝对根）
-都有。相对的那种在子目录下会变成 `/webman/3rdparty/gopeed/app/api/...` → 404，
-绝对的那种会打到 DSM 根 → 404。所以在 `flutter_bootstrap.js` 之前注入一段：
+Gopeed 的请求路径混着写：`api/v1/resolve`（相对）和 `/api/v1/tasks`（绝对根）都有。
+统一改写成 CGI 路径（`PATH_INFO` 直接承载真实路径，不用 URL 编码）：
 
 ```javascript
-var API_ORIGIN = location.protocol + "//" + location.hostname + ":38099";
+var API_CGI = "/webman/3rdparty/gopeed/api.cgi";
+
 function rewrite(u) {
   if (typeof u !== "string" || u.indexOf("api/") < 0) return u;
+  if (u.indexOf("api.cgi") >= 0) return u;              // 已经改过，防止递归
   var m = u.match(/^(?:https?:\/\/[^\/]*)?\/?(api\/.*)$/);
-  return m ? API_ORIGIN + "/" + m[1] : u;
+  return m ? API_CGI + "/" + m[1] : u;                  // -> api.cgi/api/v1/tasks
 }
 // patch XMLHttpRequest.prototype.open / window.fetch / EventSource
 ```
 
-**3）隧道注入 CORS**
+**3）`ui/api.cgi`：同源反向代理**
 
-跨域请求带 `Authorization` / `Content-Type` 会触发预检，引擎本身不懂 CORS，
-所以由隧道负责：`OPTIONS` 直接回 204 + `Access-Control-Allow-*`，普通响应在
-状态行后插入同样的头（回显 `Origin`，并带 `Allow-Credentials: true`）。
+```python
+UPSTREAM = "http://127.0.0.1:38099"
+path  = os.environ["PATH_INFO"]        # /api/v1/tasks
+query = os.environ["QUERY_STRING"]     # status=done
+# 转发 method / body / Authorization / X-Api-Token / Content-Type
+# 输出 Status: + 头 + body（去掉 transfer-encoding / connection / content-length）
+```
 
-> 隧道因此**无条件启用**：即使没有证书（只跑 HTTP）也要开，否则 CORS 头没人加。
+**DSM 以 root 执行套件 CGI**，所以脚本开头会 `setgid/setuid` 到 `gopeed`
+（实测 `euid 0 -> 154548 gopeed`）。
+
+> 只允许 `/api/` 前缀，避免变成任意 URL 代理。
 
 **4）关闭 Flutter 的 service worker**
 
-`flutter_bootstrap.js` 末尾的 `_flutter.loader.load({ serviceWorkerSettings: ... })`
-改成 `_flutter.loader.load({})`。否则子目录下注册的 SW 会把旧版本缓存住，
-更新套件后仍然看到旧页面。
+`flutter_bootstrap.js` 末尾 `_flutter.loader.load({ serviceWorkerSettings: ... })`
+改成 `_flutter.loader.load({})`。否则子目录下注册的 SW 会把旧版本缓存住。
+
+### 仍然保留的隧道
+
+`bin/gopeed-tunnel.py` 现在只服务**直连 38099** 的场景（有人直接收藏
+`http://nas:38099`），它继续提供 http/https 同端口 + CORS。
+桌面图标走的是 CGI，不依赖它。
 
 ## 三之五、HTTP 与 HTTPS 同端口
 
@@ -367,6 +416,9 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 | 9 | IPv6 双栈 | ✅ `tcp6 :::38099` 监听，IPv4/IPv6 均可访问 |
 | 10 | UI / API | ✅ `/` 200、登录 200 |
 | 11 | 进程身份 | ✅ 以套件用户 `gopeed` 运行 |
+| 12 | 同源 CGI 代理 | ✅ `/webman/3rdparty/gopeed/api.cgi/api/v1/info` 401（未授权）、登录 200 + token、带 token 取 config 200、创建任务 200 且文件落盘属主 `gopeed` |
+| 13 | **https 下的 CGI** | ✅ `https://127.0.0.1:5001/webman/3rdparty/gopeed/...`：index 200、canvaskit.wasm 200、api 401（正常未授权） |
+| 14 | CGI 运行身份 | ✅ DSM 以 root 执行，脚本 `setgid/setuid` 到 `gopeed`（实测 euid 0 → 154548） |
 
 ### 已知问题
 
