@@ -91,6 +91,22 @@ sudo sed -i 's/^WEB_PASS=.*/WEB_PASS=""/' /var/packages/gopeed/etc/gopeed.conf  
 sudo synopkg restart gopeed
 ```
 
+### 设置页全是 0 / 文件不在指定目录（1.9.3-36 已修）
+
+如果你看到设置页里 **Download Directory 是 `/`**、**Max Running Tasks 0**、**BT / ED2K
+端口 0**，而且新建的任务文件不知道去哪了：
+
+- 1.9.3-36 之前，种子配置只写了 `protocolConfig.bt/ed2k`，而 `-c` 的
+  `protocolConfig` 是**整块替换** —— 引擎默认的 `protocolConfig.http` 被一起抹掉了。
+  浏览器端的 Flutter UI 对 `http` 做无 null 判断的 `as Map` 转换，于是**整份配置解析失败**，
+  所有设置退回默认值；新建任务就带着 `path="./"` 提交，文件落到引擎工作目录。
+- **升级到 1.9.3-36 即可**（覆盖安装，不用清数据）：种子现在写全三块，`bin/gopeed-sync.py`
+  每次启动还会检查并补回 `protocolConfig.http`，日志里能看到
+  `fixed: protocolConfig.http was missing - restored`。
+
+装完刷新一下页面（Ctrl+F5），设置页应显示你真正配置的目录与端口。
+之前用坏目录建的任务，删掉后重新添加就会落到正确位置。
+
 ## 浏览器扩展
 
 装 [Gopeed 浏览器扩展](https://chromewebstore.google.com/detail/gopeed/mijpgljlfcapndmchhjffkpckknofcnd)后，

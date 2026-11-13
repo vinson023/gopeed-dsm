@@ -809,31 +809,10 @@ DSM 的 CGI 是按**文件属主**决定身份的，套件文件安装后都归 
 
 ### 2.5 `maxRunning` 被写成 0，任务全部卡在 `wait`（1.9.3-35）
 
-第二台机器（/volume2/download）上抓到的现场：安装 9 秒后，存储里的配置被改成
+> 这一节记录的是现象与当时的对策。**根因在 1.9.3-36 才查清**：那份"被清空"的配置
+> 其实是 Web UI 解析失败后把自己的默认值写回来的结果，详见
+> [三之十一](#三之十一设置页全是-0任务存到---真正的根因193-36)。1.9.3-36 之后不会再发生。
 
-```json
-{"downloadDir":"./","maxRunning":0,"protocolConfig":{"bt":{"listenPort":0},...},
- "extra":{"bt":{"subscribeTrackers":[...],"lastTrackerUpdateTime":"..."}}}
-```
-
-也就是**只有 `extra.bt` 是有效内容**（tracker 订阅那一块），其余全是默认零值。
-`maxRunning=0` 意味着 `pkg/download` 的调度器一个任务都不放行 —— 任务列表里全是
-`status=wait`、进度 0，看起来就是"任务不动"；而 `downloadDir="./"` 会让文件落到
-引擎的工作目录（`/var/packages/gopeed/target`）而不是用户选的地方。
-
-复现方式（真机验证过）：直接 `PUT /api/v1/config` 一份上面那样的配置，任务立刻停摆。
-
-对策两条：
-
-1. `gopeed-sync.py` 增加 `--max-running 5`：`maxRunning` 为 0 时补回 5（Gopeed 自己的默认值）
-2. `--watch 60` 看门狗：`start-stop-status` 用 nohup 拉起一个常驻进程，每分钟检查一次，
-   **只在配置"看起来被清空"时**（`maxRunning==0` 或 `downloadDir` 为空/`./` 或三个端口全 0）
-   才按 `gopeed.conf` 恢复。正常配置/用户在 UI 里改的值不会被覆盖
-
-实测：手动灌一份被清空的配置 → 70 秒内自动恢复成
-`dir=/volume2/download maxRunning=5 bt=51413 ed2k=4662/4672`。
-
-### 2.5 `maxRunning` 被写成 0，任务全部卡在 `wait`（1.9.3-35）
 
 第二台机器（/volume2/download）上抓到的现场：安装 9 秒后，存储里的配置被改成
 
@@ -887,6 +866,75 @@ http server panic: DELETE /api/v1/tasks/<id>
    它走的是另一条代码路径，多数情况能成功。
 
 本仓库不修补上游二进制，若稳定复现请带上日志里的 panic 栈提到 Issues。
+
+## 三之十一、设置页全是 0、任务存到 `./` —— 真正的根因（1.9.3-36）
+
+### 现象
+
+- 设置页：**Download Directory `/`**、**Max Running Tasks 0**、**BitTorrent Port 0**、ED2K 两个端口 0
+- 用界面新建任务，文件不进向导里填的目录，也不知道去哪了
+- 但 `curl http://127.0.0.1:38100/api/v1/config` 返回的却是正确值
+
+接口对、界面错，说明问题在**前端解析**。打开浏览器控制台一眼看到：
+
+```
+[W] load downloader config fail  ERROR: TypeError: null: type 'minified:Ca' is not a subtype of type 'Map<String, dynamic>'
+```
+
+`Null` 不能转成 `Map<String, dynamic>` —— 解析整份配置时抛异常，前端就退回自己的默认
+对象（`downloadDir: "/"`、`maxRunning: 0`、端口 0），所以你看到的一切都是默认值。
+
+### 定位
+
+`main.dart.js` 里的配置解析（`A.bdM.prototype.$1`）对 `protocolConfig` 逐字段做
+**无 null 判断的 Map 转换**：
+
+```js
+o = t.a                     // "cast to Map<String, dynamic>"
+n = o.a(p.i(r, "http"))     // protocolConfig.http 为 null 时直接抛
+```
+
+`protocolConfig` 里只要有 `http` / `bt` / `ed2k` 少一个，整份配置就废。
+
+### 为什么我们的包会缺 `http`
+
+`-c config.json` 里的 `downloadConfig` 是**整块替换** `protocolConfig`，不是逐字段合并。
+我们的种子只写了 `bt` 和 `ed2k`，于是引擎默认自带的那份 `http` 被一起替换掉了。
+真机隔离实验（同一台 NAS、同样的二进制，只换启动参数）：
+
+| 启动方式 | `protocolConfig` 的键 | 界面 |
+|---|---|---|
+| 不带 `-c` | `bt` / `ed2k` / **`http`** | 正常 |
+| 旧种子（只写 bt/ed2k） | `bt` / `ed2k` | **全 0** |
+| 新种子（带 http） | `bt` / `ed2k` / `http` | 正常 |
+
+### 一条完整的因果链
+
+1. 首次启动写入只含 `bt`/`ed2k` 的种子 → `protocolConfig.http` 消失
+2. 浏览器加载配置时解析失败 → 所有设置显示默认值（0 / `/`）
+3. 你在界面里新建任务 → `opts.path` 取的是界面里的默认目录 `"./"` → 文件落到引擎工作目录
+   （`/var/packages/gopeed/target`），所以"不知道存到哪去了"
+4. 界面里任何一次保存（比如 tracker 订阅更新）都会把**默认值整份 PUT 回去** →
+   存储里出现 `maxRunning:0, downloadDir:"./", 端口全 0` 的那份配置
+   （就是三之十 2.5 记录的现场）
+
+### 修法
+
+- `start-stop-status` 的种子写完整 `protocolConfig`（`http` + `bt` + `ed2k`，`http` 用
+  上游默认 UA / connections 16）
+- `gopeed-sync.py` 每次启动、以及看门狗每一轮都检查 `protocolConfig.http`，
+  **缺失就补**（不动其他任何值），日志写明：
+  `fixed: protocolConfig.http was missing - restored (the web UI cannot parse a config without it and shows 0 for everything)`
+
+### 真机验证（192.168.5.140，DSM 7.4.1，全新安装过的环境）
+
+| 项 | 结果 |
+|---|---|
+| 删掉 `protocolConfig.http` 后重启 | 日志出现 `fixed: protocolConfig.http ...`，配置里 `http` 回来了 |
+| 设置页 | Download Directory `/volume2/download`、Max Running `5`、BitTorrent Port `51413`、ED2K `4662/4672` |
+| 控制台 | 不再有 `load downloader config fail` |
+| 界面新建 HTTP 任务 | 任务 `opts.path=/volume2/download`，文件 `/volume2/download/probe.bin`（5 MB，属主 `gopeed`） |
+| 旧任务（`path="./"`） | 删掉后按原 magnet 重建，路径改为 `/volume2/download`，正常续传 |
 
 ## 四、启动参数
 
@@ -942,6 +990,30 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 > 一起同步，见「三之七」）。`start-stop-status` 里的 `sync_settings()`
 > 只负责把 conf 里的值作为参数传给它，不再用 sed 拼 JSON。
 
+### 4. `-c` 种子里的 `protocolConfig` 是整块替换，不是合并
+
+```json
+{"downloadConfig":{"protocolConfig":{"bt":{"listenPort":51413},"ed2k":{...}}}}
+```
+
+这样写会把引擎默认自带的 `protocolConfig.http` **一起替换掉**（`http` 变 `null`），
+而浏览器端的 Flutter UI 解析配置时对 `protocolConfig.http` 做无 null 判断的
+`as Map` 转换 —— 于是整份配置解析失败，设置页全部显示默认值（目录 `/`、
+maxRunning 0、端口 0），新建任务的 `opts.path` 也变成 `"./"`。
+
+种子必须写全三块：
+
+```json
+"protocolConfig": {
+  "http": {"userAgent": "...", "connections": 16, "useServerCtime": false},
+  "bt":   {"listenPort": 51413},
+  "ed2k": {"listenPort": 4662, "udpPort": 4672}
+}
+```
+
+`gopeed-sync.py` 启动时还会再检查一遍 `protocolConfig.http`，缺了就补上，
+所以老版本的存储也能自愈。详见「三之十一」。
+
 ## 六、实测记录
 
 **真机**：DSM 7.4.1-90080（x86_64），通过 `synopkg install` 安装并运行。
@@ -975,7 +1047,10 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 | 25 | 空密码真机生效 | ✅ `WEB_PASS=""` 重启后进程无 `-u/-p`（也没有 `-T`），`GET /api/v1/config` 免 token 200、`/` 200 |
 | 26 | 扩展商店（1.9.3-32） | ✅ `api.cgi` 转发 `X-Target-Uri` 后 `/api/v1/proxy` 由 500 → 200；DSM 窗口里「市场」渲染出 9+ 张卡片（24 个 proxy 请求全 200）；同源下不再有请求被误改写到 api.cgi |
 | 27 | **全新安装（1.9.3-33）** | ✅ 卸载→清空 `@appdata`/`@appconf`/`@appshare`→安装：conf 写入 51413/4662/4672 + API_TOKEN，首启引擎即拿到三个端口，日志 `starting gopeed 1.9.3-33 (x86_64)` + `engine: ... bt=51413 ed2k=4662/4672` + `settings verified` |
-| 27 | **全新安装（1.9.3-33）** | ✅ 卸载→清空 `@appdata`/`@appconf`/`@appshare`→安装：conf 写入 51413/4662/4672 + API_TOKEN，首启引擎即拿到三个端口，日志 `starting gopeed 1.9.3-33 (x86_64)` + `engine: ... bt=51413 ed2k=4662/4672` + `settings verified` |
+| 28 | `protocolConfig.http` 缺失 | ✅ 删掉 `http` 后重启 → 日志 `fixed: protocolConfig.http was missing - restored`，配置里 `http` 回来 |
+| 29 | 设置页读数（1.9.3-36） | ✅ Download Directory `/volume2/download`、Max Running `5`、BitTorrent Port `51413`、ED2K `4662/4672`；控制台不再有 `load downloader config fail` |
+| 30 | **界面新建任务落点** | ✅ 通过 UI 新建 HTTP 任务 → `opts.path=/volume2/download`，文件 `/volume2/download/probe.bin`（5 MB，属主 `gopeed`） |
+| 31 | 旧任务（`path="./"`）迁移 | ✅ `DELETE` 正常（无 nil pointer panic），按原 magnet 重建后 `path=/volume2/download` 并正常续传 |
 
 ### 已知问题
 

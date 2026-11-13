@@ -22,6 +22,10 @@ PID_FILE="${VAR}/gopeed.pid"
 TUNNEL_PID="${VAR}/tunnel.pid"
 SYNC_PID="${VAR}/sync.pid"
 
+# Gopeed's own default. Must be present in protocolConfig.http.* or the browser
+# UI cannot parse the config at all (see the seed below).
+DEFAULT_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
+
 WEB_PORT="__PORT__"
 WEB_USER="admin"
 WEB_PASS=""
@@ -227,8 +231,13 @@ start_service() {
         port="$WEB_PORT"
     fi
 
+    # protocolConfig must be complete: the Flutter UI casts protocolConfig.http to
+    # a Map, and omitting it (which a -c seed does when it only carries bt/ed2k)
+    # makes the whole config fail to parse in the browser. Every setting then
+    # shows 0 and new tasks are created with path "./" -- i.e. files land in the
+    # engine's working directory instead of DOWNLOAD_DIR.
     local dlcfg
-    dlcfg="{\"downloadDir\":\"${DOWNLOAD_DIR}\",\"autoStartTasks\":${AUTO_START},\"protocolConfig\":{\"bt\":{\"listenPort\":${BT_PORT}},\"ed2k\":{\"listenPort\":${ED2K_PORT},\"udpPort\":${ED2K_UDP_PORT}}}}"
+    dlcfg="{\"downloadDir\":\"${DOWNLOAD_DIR}\",\"maxRunning\":5,\"autoStartTasks\":${AUTO_START},\"protocolConfig\":{\"http\":{\"userAgent\":\"${DEFAULT_UA}\",\"connections\":16,\"useServerCtime\":false},\"bt\":{\"listenPort\":${BT_PORT}},\"ed2k\":{\"listenPort\":${ED2K_PORT},\"udpPort\":${ED2K_UDP_PORT}}}}"
 
     if [ "$fresh" = "1" ]; then
         cat > "$VAR/config.json" <<JSON

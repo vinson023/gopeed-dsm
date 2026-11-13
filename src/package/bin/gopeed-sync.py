@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Push the DSM-side settings (download dir, BT / ED2K ports, maxRunning) into Gopeed.
 
+It also keeps `protocolConfig.http` present. The Flutter settings page casts that
+object to a Map without a null check, so when the engine omits it (it does when a
+`-c` seed replaces protocolConfig, or after a config write that leaves it out) the
+*entire* config fails to deserialise and the UI silently shows defaults: download
+directory "/", maxRunning 0 and all three ports 0. New tasks then carry path "./"
+and land in the engine's working directory instead of the configured folder.
+
 Gopeed applies `downloadConfig` from -c only when its storage is initialised for
 the very first time, so on every later start - and on any upgrade, where
 /var/packages/gopeed/var survives - the engine keeps whatever it stored. The
@@ -70,6 +77,37 @@ def ports_of(cfg):
             int(ed.get("udpPort") or 0))
 
 
+DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36")
+
+
+def ensure_http(cfg):
+    """Make sure protocolConfig.http is a complete object; returns True if patched.
+
+    The web UI parses `protocolConfig.http` (and proxy) with a plain
+    `as Map<String, dynamic>` cast. A null there throws, the whole config falls
+    back to its defaults, and every setting then reads 0 -- including the ports.
+    It must therefore never be absent, even when nothing else changes.
+    """
+    proto = cfg.setdefault("protocolConfig", {})
+    http = proto.get("http")
+    changed = False
+    if not isinstance(http, dict):
+        http = {}
+        proto["http"] = http
+        changed = True
+    for key, value in (("userAgent", DEFAULT_UA), ("connections", 16),
+                       ("useServerCtime", False)):
+        if key not in http or http[key] in (None, ""):
+            http[key] = value
+            changed = True
+    if "proxy" not in cfg or cfg.get("proxy") is None:
+        cfg["proxy"] = {"enable": False, "system": False, "scheme": "",
+                        "host": "", "usr": "", "pwd": ""}
+        changed = True
+    return changed
+
+
 def looks_wiped(cfg):
     bt, tcp, udp = ports_of(cfg)
     return (int(cfg.get("maxRunning") or 0) == 0
@@ -111,7 +149,11 @@ def run_once(args, want, heal=False, quiet=False):
         print("read config failed: %s" % exc)
         return 3
 
-    if heal and not looks_wiped(cfg):
+    # Runs before the heal gate: a missing protocolConfig.http breaks the web UI
+    # for *every* setting, and adding it never touches a value the user chose.
+    http_patched = ensure_http(cfg)
+
+    if heal and not looks_wiped(cfg) and not http_patched:
         if not quiet:
             print("config looks healthy, nothing to heal")
         return 0
@@ -120,7 +162,12 @@ def run_once(args, want, heal=False, quiet=False):
     bt_old, tcp_old, udp_old = ports_of(cfg)
     max_old = int(cfg.get("maxRunning") or 0)
 
-    changed = False
+    changed = http_patched
+    if http_patched:
+        # always logged, even from the watchdog: this is the one repair that makes
+        # the web UI usable again, so it must be visible in gopeed.log
+        print("fixed: protocolConfig.http was missing - restored (the web UI "
+              "cannot parse a config without it and shows 0 for everything)")
     # maxRunning 0 freezes the whole queue: every task sits in "wait" and the UI
     # looks broken. Gopeed's own default is 5.
     if want["max"] and max_old == 0:

@@ -34,10 +34,10 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-35"
-CHANGELOG = ("1.9.3-35 restore maxRunning (0 froze the whole queue, every task sat in "
-             "wait) and add a watchdog that re-checks the stored config once a minute, "
-             "healing only a config that looks wiped")
+PKG_VERSION = "1.9.3-36"
+CHANGELOG = ("1.9.3-36 seed protocolConfig.http and keep it alive on every start: "
+             "without it the web UI cannot parse the config, so it showed 0 for every "
+             "port and sent new tasks to \"./\" instead of the download directory")
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {
