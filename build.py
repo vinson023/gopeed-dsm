@@ -34,10 +34,10 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-34"
-CHANGELOG = ("1.9.3-34 the installer grants the package user rw on the wizard download dir "
-             "(synoacltool), and a non-writable dir is no longer silently replaced by the "
-             "package share - the settings page now always shows the folder you chose")
+PKG_VERSION = "1.9.3-35"
+CHANGELOG = ("1.9.3-35 restore maxRunning (0 froze the whole queue, every task sat in "
+             "wait) and add a watchdog that re-checks the stored config once a minute, "
+             "healing only a config that looks wiped")
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

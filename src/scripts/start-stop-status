@@ -20,6 +20,7 @@ CONF="${ETC}/gopeed.conf"
 LOG="${VAR}/gopeed.log"
 PID_FILE="${VAR}/gopeed.pid"
 TUNNEL_PID="${VAR}/tunnel.pid"
+SYNC_PID="${VAR}/sync.pid"
 
 WEB_PORT="__PORT__"
 WEB_USER="admin"
@@ -98,15 +99,45 @@ tunnel_available() {
 # settings page shows 0 for BT/ED2K, i.e. random, unreachable ports. Push the
 # wanted values through the REST API once the engine is up. The script is
 # idempotent, so a no-op start costs one GET.
+# shared by the one-shot sync and the watchdog
+build_sync_args() {
+    SYNC_ARGS=(--port "$1" --dir "$DOWNLOAD_DIR"
+               --bt-port "$BT_PORT" --ed2k-tcp "$ED2K_PORT" --ed2k-udp "$ED2K_UDP_PORT"
+               --max-running 5)
+    [ -n "$WEB_PASS" ] && SYNC_ARGS+=(--user "$WEB_USER" --pass "$WEB_PASS")
+    return 0
+}
+
+# Gopeed can rewrite its stored config to a default state moments after start
+# (seen on a fresh install: maxRunning 0, downloadDir "./", all ports 0), which
+# freezes the queue. The watchdog re-checks every minute but only touches a
+# config that looks wiped, so values changed in the web UI are left alone.
+start_watchdog() {
+    local py="$1" port="$2"
+    [ -n "$py" ] || return 0
+    [ -f "$SYNC_PY" ] || return 0
+    build_sync_args "$port"
+    nohup "$py" "$SYNC_PY" "${SYNC_ARGS[@]}" --watch 60 >> "$LOG" 2>&1 &
+    echo $! > "$SYNC_PID"
+    log "config watchdog started pid=$(cat "$SYNC_PID" 2>/dev/null)"
+}
+
+stop_watchdog() {
+    [ -f "$SYNC_PID" ] || return 0
+    local pid
+    pid="$(head -n 1 "$SYNC_PID" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
+    rm -f "$SYNC_PID"
+}
+
 sync_settings() {
     local port="$1" attempt=0
     [ -f "$SYNC_PY" ] || { log "no ${SYNC_PY}; download dir and ports NOT synced"; return 0; }
     local py
     py="$(find_python)" || { log "no python3; download dir and ports NOT synced"; return 0; }
 
-    local -a sargs=(--port "$port" --dir "$DOWNLOAD_DIR"
-                    --bt-port "$BT_PORT" --ed2k-tcp "$ED2K_PORT" --ed2k-udp "$ED2K_UDP_PORT")
-    [ -n "$WEB_PASS" ] && sargs+=(--user "$WEB_USER" --pass "$WEB_PASS")
+    build_sync_args "$port"
+    local -a sargs=("${SYNC_ARGS[@]}")
 
     # The engine binds its port slightly before the config it seeds is actually
     # written, so a single attempt can read a half-initialised config. Retry a
@@ -242,6 +273,8 @@ JSON
         return 1
     fi
 
+    start_watchdog "$py" "$port"
+
     if [ "$use_tunnel" = "1" ]; then
         start_tunnel "$py"
         local j=0
@@ -265,6 +298,7 @@ JSON
 
 stop_service() {
     local pid i=0
+    stop_watchdog
     if tunnel_running; then
         pid="$(head -n 1 "$TUNNEL_PID" | tr -d '[:space:]')"
         log "stopping tunnel pid=${pid}"

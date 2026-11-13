@@ -807,6 +807,58 @@ fi
 DSM 的 CGI 是按**文件属主**决定身份的，套件文件安装后都归 `gopeed`，
 所以这条路走不通。结论：这一步只能由用户在控制面板（或 SSH 的 `synoacltool`）做一次。
 
+### 2.5 `maxRunning` 被写成 0，任务全部卡在 `wait`（1.9.3-35）
+
+第二台机器（/volume2/download）上抓到的现场：安装 9 秒后，存储里的配置被改成
+
+```json
+{"downloadDir":"./","maxRunning":0,"protocolConfig":{"bt":{"listenPort":0},...},
+ "extra":{"bt":{"subscribeTrackers":[...],"lastTrackerUpdateTime":"..."}}}
+```
+
+也就是**只有 `extra.bt` 是有效内容**（tracker 订阅那一块），其余全是默认零值。
+`maxRunning=0` 意味着 `pkg/download` 的调度器一个任务都不放行 —— 任务列表里全是
+`status=wait`、进度 0，看起来就是"任务不动"；而 `downloadDir="./"` 会让文件落到
+引擎的工作目录（`/var/packages/gopeed/target`）而不是用户选的地方。
+
+复现方式（真机验证过）：直接 `PUT /api/v1/config` 一份上面那样的配置，任务立刻停摆。
+
+对策两条：
+
+1. `gopeed-sync.py` 增加 `--max-running 5`：`maxRunning` 为 0 时补回 5（Gopeed 自己的默认值）
+2. `--watch 60` 看门狗：`start-stop-status` 用 nohup 拉起一个常驻进程，每分钟检查一次，
+   **只在配置"看起来被清空"时**（`maxRunning==0` 或 `downloadDir` 为空/`./` 或三个端口全 0）
+   才按 `gopeed.conf` 恢复。正常配置/用户在 UI 里改的值不会被覆盖
+
+实测：手动灌一份被清空的配置 → 70 秒内自动恢复成
+`dir=/volume2/download maxRunning=5 bt=51413 ed2k=4662/4672`。
+
+### 2.5 `maxRunning` 被写成 0，任务全部卡在 `wait`（1.9.3-35）
+
+第二台机器（/volume2/download）上抓到的现场：安装 9 秒后，存储里的配置被改成
+
+```json
+{"downloadDir":"./","maxRunning":0,"protocolConfig":{"bt":{"listenPort":0},...},
+ "extra":{"bt":{"subscribeTrackers":[...],"lastTrackerUpdateTime":"..."}}}
+```
+
+也就是**只有 `extra.bt` 是有效内容**（tracker 订阅那一块），其余全是默认零值。
+`maxRunning=0` 意味着 `pkg/download` 的调度器一个任务都不放行 —— 任务列表里全是
+`status=wait`、进度 0，看起来就是"任务不动"；而 `downloadDir="./"` 会让文件落到
+引擎的工作目录（`/var/packages/gopeed/target`）而不是用户选的地方。
+
+复现方式（真机验证过）：直接 `PUT /api/v1/config` 一份上面那样的配置，任务立刻停摆。
+
+对策两条：
+
+1. `gopeed-sync.py` 增加 `--max-running 5`：`maxRunning` 为 0 时补回 5（Gopeed 自己的默认值）
+2. `--watch 60` 看门狗：`start-stop-status` 用 nohup 拉起一个常驻进程，每分钟检查一次，
+   **只在配置"看起来被清空"时**（`maxRunning==0` 或 `downloadDir` 为空/`./` 或三个端口全 0）
+   才按 `gopeed.conf` 恢复。正常配置/用户在 UI 里改的值不会被覆盖
+
+实测：手动灌一份被清空的配置 → 70 秒内自动恢复成
+`dir=/volume2/download maxRunning=5 bt=51413 ed2k=4662/4672`。
+
 ### 3. 任务一直不动
 
 先看任务状态和日志：

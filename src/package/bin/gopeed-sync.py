@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push the DSM-side settings (download dir, BT / ED2K ports) into Gopeed.
+"""Push the DSM-side settings (download dir, BT / ED2K ports, maxRunning) into Gopeed.
 
 Gopeed applies `downloadConfig` from -c only when its storage is initialised for
 the very first time, so on every later start - and on any upgrade, where
@@ -8,17 +8,22 @@ install wizard's download dir, BT port and ED2K ports would then be ignored and
 the settings page shows 0 for all three ports (0 = random port, unreachable
 from outside).
 
-This script reads the live config through the local REST API, sets the wanted
-values, writes the config back and then re-reads it to prove the values landed.
+Worse, the stored config can be rewritten to a default state *after* startup
+(seen on a fresh install: maxRunning=0, downloadDir="./", all ports 0, only
+extra.bt.* filled in by the tracker job). maxRunning 0 freezes the queue, so
+every task sits in "wait" and nothing downloads. `--watch` keeps an eye on that
+and restores the configured values when - and only when - the config looks
+wiped, so a change made in the web UI is left alone.
 
 Usage:
   gopeed-sync.py --port 38100 --dir /volume1/downloads \
                  [--bt-port 51413] [--ed2k-tcp 4662] [--ed2k-udp 4672] \
-                 [--user admin --pass pw]
-  (omit --pass entirely when web authentication is disabled)
+                 [--max-running 5] [--user admin --pass pw]
+  gopeed-sync.py ... --heal               # only act when the config looks wiped
+  gopeed-sync.py ... --watch 60           # heal pass every 60 s, forever
 
 Exit codes:
-  0 nothing to do / written and verified
+  0 nothing to do / written and verified / healthy (with --heal)
   2 login failed
   3 read config failed
   4 write config failed
@@ -27,6 +32,7 @@ Exit codes:
 import argparse
 import json
 import sys
+import time
 import urllib.request
 
 
@@ -64,40 +70,30 @@ def ports_of(cfg):
             int(ed.get("udpPort") or 0))
 
 
-def report(cfg, want_dir, want_bt, want_tcp, want_udp):
+def looks_wiped(cfg):
     bt, tcp, udp = ports_of(cfg)
-    print("engine: dir=%s bt=%d ed2k=%d/%d" % (cfg.get("downloadDir"), bt, tcp, udp))
+    return (int(cfg.get("maxRunning") or 0) == 0
+            or (cfg.get("downloadDir") or "") in ("", "./")
+            or (bt == 0 and tcp == 0 and udp == 0))
+
+
+def mismatches(cfg, want):
+    bt, tcp, udp = ports_of(cfg)
     bad = []
-    if want_dir and (cfg.get("downloadDir") or "").rstrip("/") != want_dir:
+    if want["dir"] and (cfg.get("downloadDir") or "").rstrip("/") != want["dir"]:
         bad.append("downloadDir")
-    if want_bt and bt != want_bt:
+    if want["bt"] and bt != want["bt"]:
         bad.append("bt")
-    if want_tcp and tcp != want_tcp:
+    if want["tcp"] and tcp != want["tcp"]:
         bad.append("ed2k-tcp")
-    if want_udp and udp != want_udp:
+    if want["udp"] and udp != want["udp"]:
         bad.append("ed2k-udp")
+    if want["max"] and int(cfg.get("maxRunning") or 0) != want["max"]:
+        bad.append("maxRunning")
     return bad
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, required=True)
-    ap.add_argument("--dir", required=True)
-    ap.add_argument("--bt-port", default=0,
-                    help="fixed BitTorrent listen port (0 keeps whatever is stored)")
-    ap.add_argument("--ed2k-tcp", default=0,
-                    help="fixed ED2K TCP port (0 = leave as is)")
-    ap.add_argument("--ed2k-udp", default=0,
-                    help="fixed ED2K UDP port (0 = leave as is)")
-    ap.add_argument("--user", default="")
-    ap.add_argument("--pass", dest="password", default="")
-    args = ap.parse_args()
-
-    want_dir = (args.dir or "").rstrip("/")
-    want_bt = sane_port(args.bt_port)
-    want_tcp = sane_port(args.ed2k_tcp)
-    want_udp = sane_port(args.ed2k_udp)
-
+def run_once(args, want, heal=False, quiet=False):
     base = "http://127.0.0.1:%d" % args.port
     token = None
     if args.password:
@@ -115,29 +111,40 @@ def main():
         print("read config failed: %s" % exc)
         return 3
 
+    if heal and not looks_wiped(cfg):
+        if not quiet:
+            print("config looks healthy, nothing to heal")
+        return 0
+
     old_dir = (cfg.get("downloadDir") or "").rstrip("/")
     bt_old, tcp_old, udp_old = ports_of(cfg)
+    max_old = int(cfg.get("maxRunning") or 0)
 
     changed = False
-    if want_dir and old_dir != want_dir:
-        cfg["downloadDir"] = want_dir
+    # maxRunning 0 freezes the whole queue: every task sits in "wait" and the UI
+    # looks broken. Gopeed's own default is 5.
+    if want["max"] and max_old == 0:
+        cfg["maxRunning"] = want["max"]
+        changed = True
+    if want["dir"] and old_dir != want["dir"]:
+        cfg["downloadDir"] = want["dir"]
         changed = True
 
     # BitTorrent: 0 means "let the OS pick a random port", which no router rule
     # can be pointed at -- inbound peers and seeding then never work.
-    if want_bt and bt_old != want_bt:
+    if want["bt"] and bt_old != want["bt"]:
         proto = cfg.setdefault("protocolConfig", {})
-        proto.setdefault("bt", {})["listenPort"] = want_bt
+        proto.setdefault("bt", {})["listenPort"] = want["bt"]
         changed = True
 
     # ED2K needs a fixed TCP+UDP port to be reachable (HighID).
-    if (want_tcp and tcp_old != want_tcp) or (want_udp and udp_old != want_udp):
+    if (want["tcp"] and tcp_old != want["tcp"]) or (want["udp"] and udp_old != want["udp"]):
         proto = cfg.setdefault("protocolConfig", {})
         ed = proto.setdefault("ed2k", {})
-        if want_tcp and tcp_old != want_tcp:
-            ed["listenPort"] = want_tcp
-        if want_udp and udp_old != want_udp:
-            ed["udpPort"] = want_udp
+        if want["tcp"] and tcp_old != want["tcp"]:
+            ed["listenPort"] = want["tcp"]
+        if want["udp"] and udp_old != want["udp"]:
+            ed["udpPort"] = want["udp"]
         changed = True
 
     if changed:
@@ -145,9 +152,9 @@ def main():
         for cat in cfg.get("categories") or []:
             path = (cat.get("path") or "").rstrip("/")
             if old_dir and path.startswith(old_dir + "/"):
-                cat["path"] = want_dir + path[len(old_dir):]
+                cat["path"] = want["dir"] + path[len(old_dir):]
             elif old_dir and path == old_dir:
-                cat["path"] = want_dir
+                cat["path"] = want["dir"]
         try:
             call(base, "/api/v1/config", "PUT", cfg, token=token)
         except Exception as exc:
@@ -162,12 +169,53 @@ def main():
         print("verify failed: %s" % exc)
         return 3
 
-    bad = report(cfg, want_dir, want_bt, want_tcp, want_udp)
+    bad = mismatches(cfg, want)
+    bt, tcp, udp = ports_of(cfg)
+    print("engine: dir=%s bt=%d ed2k=%d/%d maxRunning=%d"
+          % (cfg.get("downloadDir"), bt, tcp, udp, int(cfg.get("maxRunning") or 0)))
     if bad:
         print("MISMATCH after write: %s" % ", ".join(bad))
         return 5
     print("verified: %s" % ("written" if changed else "nothing to do"))
     return 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--dir", required=True)
+    ap.add_argument("--bt-port", default=0,
+                    help="fixed BitTorrent listen port (0 keeps whatever is stored)")
+    ap.add_argument("--ed2k-tcp", default=0, help="fixed ED2K TCP port (0 = leave as is)")
+    ap.add_argument("--ed2k-udp", default=0, help="fixed ED2K UDP port (0 = leave as is)")
+    ap.add_argument("--max-running", default=0,
+                    help="restore maxRunning when it is 0 (0 = leave alone)")
+    ap.add_argument("--heal", action="store_true",
+                    help="only act when the stored config looks wiped")
+    ap.add_argument("--watch", type=int, default=0, metavar="SECONDS",
+                    help="run a heal pass every N seconds, forever")
+    ap.add_argument("--user", default="")
+    ap.add_argument("--pass", dest="password", default="")
+    args = ap.parse_args()
+
+    want = {
+        "dir": (args.dir or "").rstrip("/"),
+        "bt": sane_port(args.bt_port),
+        "tcp": sane_port(args.ed2k_tcp),
+        "udp": sane_port(args.ed2k_udp),
+        "max": int(args.max_running or 0),
+    }
+
+    if not args.watch:
+        return run_once(args, want, heal=args.heal)
+
+    while True:
+        try:
+            run_once(args, want, heal=True, quiet=True)
+        except Exception as exc:                     # never let the watchdog die
+            print("watch: %s" % exc)
+        sys.stdout.flush()
+        time.sleep(max(10, args.watch))
 
 
 if __name__ == "__main__":
