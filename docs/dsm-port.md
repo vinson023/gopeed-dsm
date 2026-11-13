@@ -96,6 +96,55 @@ with tarfile.open(spk) as t:
 print(open(spk,'rb').read(262)[257:262])   # b'ustar'，而不是 gzip 的 1f8b
 ```
 
+## 三之二、DSM 桌面集成（主菜单图标 + 窗口内打开）
+
+只写 `adminport` 时，套件只会出现在「套件中心」，套件中心的"打开"按钮会
+**新开一个页签**指向 `http://host:38099`，主菜单（桌面）里没有图标。
+
+要让应用出现在主菜单并在 DSM 窗口内打开，需要三样东西：
+
+1. `INFO` 里声明 `dsmuidir="ui"` 和 `dsmappname="SYNO.SDS.Gopeed.Application"`；
+2. `package.tgz` 里带 `ui/config`（Ext 组件声明）和 `ui/Gopeed.js`；
+3. DSM 会把 `ui/` 软链到 `/usr/syno/synoman/webman/3rdparty/gopeed/`，
+   主菜单图标从 `ui/images/icon_{16,24,32,48}.png` 取图。
+
+**关键**：DSM 7.2 起，`config` 里的 `"type": "legacy" | "url"` 已不再决定打开方式
+（`legacy` 曾表示 iframe 内嵌）。现在必须按 Ext 应用来声明，由
+`getMainHtml()` 返回 iframe：
+
+```javascript
+Ext.apply(SYNO.SDS.Gopeed.Utils, function () {
+    return {
+        getMainHtml: function () {
+            return '<iframe src="http://<nas>:38099/" style="width:100%;height:100%;border:0"></iframe>';
+        }
+    };
+}());
+```
+
+`config` 里对应的三个类：
+
+```json
+{ "Gopeed.js": {
+    "SYNO.SDS.Gopeed.Application": { "type": "app", "appWindow": "SYNO.SDS.Gopeed.MainWindow", ... },
+    "SYNO.SDS.Gopeed.MainWindow":  { "type": "lib", "depend": ["SYNO.SDS.Gopeed.Utils"] },
+    "SYNO.SDS.Gopeed.Utils": [] } }
+```
+
+验证：
+
+```bash
+ls -la /usr/syno/synoman/webman/3rdparty/ | grep gopeed   # 软链是否存在
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/Gopeed.js
+```
+
+两者都正常后，刷新 DSM 页面（或重新登录）主菜单就会出现图标。
+
+**混合内容限制**：Gopeed 只有 HTTP。如果 DSM 本身用 https 打开，iframe 里的
+`https://host:38099` 连不上（没有 TLS），`http://` 又会被浏览器拦截。这种情况下
+`getMainHtml()` 会返回一段说明而不是空白的 iframe，并提示改用
+`http://host:5000` 访问 DSM，或给 38099 配反向代理。
+
 ## 四、启动参数
 
 ```

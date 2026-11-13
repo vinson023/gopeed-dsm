@@ -30,7 +30,9 @@
 | BT 端口 | `51413` | 避开 6881-6889（部分运营商限速） |
 | ED2K TCP / UDP | `4662` / `4672` | 固定才可能拿到 eMule HighID |
 
-4. 装完访问 `http://<NAS地址>:38099`
+4. 装完后 **DSM 主菜单里会出现 Gopeed 图标**（刷新页面或重新登录一次），
+   点它会在 DSM 窗口内直接打开 Gopeed，不会另开页签；也可以直接访问
+   `http://<NAS地址>:38099`
 
 > **端口固定为 38099**：DSM 在安装时把 `adminport` 写进套件信息并据此生成入口，
 > 装完无法在界面上改。需要别的端口请自行构建（见下文）。
@@ -92,7 +94,9 @@ python build.py --port 38123        # 换端口
 │   ├── conf/resource           data-share: gopeed
 │   ├── scripts/                preinst / postinst / start-stop-status / ...
 │   ├── WIZARD_UIFILES/         install_uifile / uninstall_uifile
-│   └── package/                打包进 package.tgz 的内容（bin/gopeed）
+│   └── package/                打包进 package.tgz 的内容
+│       ├── bin/gopeed          上游二进制
+│       └── ui/                 DSM 桌面集成（config / Gopeed.js / images）
 └── docs/dsm-port.md            移植说明与实测记录
 ```
 
@@ -109,7 +113,13 @@ python build.py --port 38123        # 换端口
 4. **IPv6 双栈**：Gopeed 用 `"%s:%d"` 拼地址，所以传 `[::]`（带方括号）而不是 `::`，
    在 `bindv6only=0` 的内核上是双栈监听；否则退回 `0.0.0.0`。
 5. **端口占用提前拦截**：`preinst` 里检查 38099，占用则中止安装（装完再改端口只能重装）。
-6. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
+6. **DSM 桌面集成**：`dsmuidir="ui"` 让 `package.tgz` 里的 `ui/` 被软链到
+   `/usr/syno/synoman/webman/3rdparty/gopeed/`，`dsmappname` 指向 Ext 应用类。
+   DSM 7.2 起 `config` 里 `type: legacy|url` 不再决定打开方式，必须在 `ui/Gopeed.js`
+   里定义 `SYNO.SDS.Gopeed.Application` / `MainWindow`，由 `getMainHtml()` 返回 iframe，
+   才能在 DSM 窗口内打开。**用 https 打开 DSM 时 iframe 会被混合内容拦截**，
+   页面会给出提示（改用 http 访问 DSM，或配反向代理）。
+7. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
    都报「套件文件格式不正确」。只有里面的 `package.tgz` 才压缩。这条最容易踩，
    详见 [docs/dsm-port.md](docs/dsm-port.md) 第三节。
 

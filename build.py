@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-13"
-CHANGELOG = "1.9.3-13 first Synology release (Gopeed 1.9.3, port 38099)"
+PKG_VERSION = "1.9.3-14"
+CHANGELOG = "1.9.3-14 DSM desktop icon + in-window iframe"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {
@@ -79,10 +79,10 @@ def replace_in(path, pairs):
         f.write(text)
 
 
-def replace_tree(root, pairs, skip=("package",)):
+def replace_tree(root, pairs, skip=("package/bin",)):
     """Substitute placeholders in every text file below root (skip the payload,
     which contains the binary). Cheap and impossible to forget a new script."""
-    skip_paths = {os.path.join(root, name) for name in skip}
+    skip_paths = {os.path.join(root, *name.split("/")) for name in skip}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
                        if os.path.join(dirpath, d) not in skip_paths]
