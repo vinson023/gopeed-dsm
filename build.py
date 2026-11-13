@@ -34,10 +34,10 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-32"
-CHANGELOG = ("1.9.3-32 the extension store works again: api.cgi now forwards X-Target-Uri, the "
-             "header the web bundle uses to fetch gopeed.com through the engine's /api/v1/proxy; "
-             "without it every store request was a 500 and the market stayed empty")
+PKG_VERSION = "1.9.3-33"
+CHANGELOG = ("1.9.3-33 settings sync now verifies what it wrote and retries 3x, and the "
+             "start log names the package version, so a fresh install can no longer end up "
+             "silently showing 0 for the BT/ED2K ports")
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

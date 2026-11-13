@@ -99,21 +99,28 @@ tunnel_available() {
 # wanted values through the REST API once the engine is up. The script is
 # idempotent, so a no-op start costs one GET.
 sync_settings() {
-    local port="$1"
-    [ -f "$SYNC_PY" ] || { log "no ${SYNC_PY}; download dir and ports not synced"; return 0; }
+    local port="$1" attempt=0
+    [ -f "$SYNC_PY" ] || { log "no ${SYNC_PY}; download dir and ports NOT synced"; return 0; }
     local py
-    py="$(find_python)" || { log "no python3; download dir and ports not synced"; return 0; }
+    py="$(find_python)" || { log "no python3; download dir and ports NOT synced"; return 0; }
 
-    set -- --port "$port" --dir "$DOWNLOAD_DIR" \
-           --bt-port "$BT_PORT" --ed2k-tcp "$ED2K_PORT" --ed2k-udp "$ED2K_UDP_PORT"
-    if [ -n "$WEB_PASS" ]; then
-        set -- "$@" --user "$WEB_USER" --pass "$WEB_PASS"
-    fi
-    if "$py" "$SYNC_PY" "$@" >> "$LOG" 2>&1; then
-        log "settings synced: dir=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
-    else
-        log "settings sync failed (exit $?); engine keeps its stored config"
-    fi
+    local -a sargs=(--port "$port" --dir "$DOWNLOAD_DIR"
+                    --bt-port "$BT_PORT" --ed2k-tcp "$ED2K_PORT" --ed2k-udp "$ED2K_UDP_PORT")
+    [ -n "$WEB_PASS" ] && sargs+=(--user "$WEB_USER" --pass "$WEB_PASS")
+
+    # The engine binds its port slightly before the config it seeds is actually
+    # written, so a single attempt can read a half-initialised config. Retry a
+    # few times and let the script itself prove the values landed.
+    while [ "$attempt" -lt 3 ]; do
+        attempt=$((attempt + 1))
+        if "$py" "$SYNC_PY" "${sargs[@]}" >> "$LOG" 2>&1; then
+            log "settings verified: dir=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
+            return 0
+        fi
+        log "settings sync attempt ${attempt} failed"
+        [ "$attempt" -lt 3 ] && sleep 3
+    done
+    log "settings sync FAILED after ${attempt} attempts - the engine keeps its stored config; see the gopeed-sync.py lines above"
     return 0
 }
 
@@ -202,7 +209,7 @@ JSON
         rm -f "$VAR/config.json"
     fi
 
-    log "starting: public=${WEB_PORT} bind=${addr}:${port} tunnel=${use_tunnel} downloads=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
+    log "starting gopeed __VERSION__ (__ARCH__): public=${WEB_PORT} bind=${addr}:${port} tunnel=${use_tunnel} downloads=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
 
     # -T only makes sense together with -u/-p: the token is validated *instead*
     # of the web session, and passing it alone would leave /api/web/login

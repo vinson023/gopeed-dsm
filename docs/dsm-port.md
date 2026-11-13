@@ -443,9 +443,11 @@ sudo synopkg restart gopeed
 
 ### 1. `postinst` 不能无条件重写 conf
 
-最初 `postinst` 每次都 `cat > gopeed.conf`，用向导变量生成配置。命令行 / 套件中心
-**升级**时向导变量是空的，于是账号、端口、下载目录全被重置成默认值 ——
-表现为"升级后设置没了"。
+最初 `postinst` 每次都 `cat > gopeed.conf`，用向导变量生成配置。而**升级**时 DSM 给的是
+向导里的**默认值**（不是用户当前的值），于是账号、端口、下载目录全被重置成默认值 ——
+表现为"升级后设置没了"。注意实测确认：连 `synopkg install` 这种命令行安装，DSM 也会把
+向导默认值当环境变量传进来（全新安装时 `wizard_web_pass` 就是 `gopeed`），所以不能靠
+"变量为空"来区分「向导升级」和「命令行升级」。
 
 正确做法：只在 conf 不存在（首次安装）时生成，升级时原样保留：
 
@@ -602,6 +604,34 @@ all language names fully covered
 
 另外给所有字体 URL 加了 `?v=__VERSION__`（`build.py` 注入版本号）：浏览器对
 404 也可能做启发式缓存，加版本戳能保证升级后一定重新拉取。
+
+### 3. 全新安装时端口是 0（1.9.3-33）
+
+有人在**全新安装**后看到设置页三个端口都是 0。定位下来最常见的原因是装的还是旧包
+（`postinst` 里没有同步逻辑的那版）；但为了排除"引擎播种不可靠"这种情况，1.9.3-33 把
+同步改成了**写完自检 + 失败重试**，并把版本写进启动日志：
+
+```
+2026-11-13 21:12:31 - starting gopeed 1.9.3-33 (x86_64): public=38099 bind=127.0.0.1:38100 ...
+engine: dir=/volume1/@appshare/gopeed/downloads bt=51413 ed2k=4662/4672
+verified: nothing to do
+2026-11-13 21:12:33 - settings verified: dir=... bt=51413 ed2k=4662/4672
+```
+
+- `gopeed-sync.py` 写完会**再读一遍**配置，值不对就返回 5（`MISMATCH after write`）
+- `start-stop-status` 失败重试 3 次（每次间隔 3 秒），全部失败才写 `settings sync FAILED`
+- `engine:` 那行是引擎**实际**的值，`settings verified:` 是同步的结论，两者对不上就是 bug
+
+真机全新安装实测（卸载 → 删除 `@appdata`/`@appconf`/`@appshare` → 安装）：
+
+| 项 | 结果 |
+|---|---|
+| conf | `BT_PORT=51413` / `ED2K_PORT=4662` / `ED2K_UDP_PORT=4672`，`API_TOKEN` 已生成 |
+| 首启播种 | 引擎直接拿到了 51413 / 4662 / 4672（同步结论 `nothing to do`） |
+| 换目录后重启 | `dir=/volume1/downloads bt=51413 ed2k=4662/4672`，同步写入并自检通过 |
+
+> **怎么确认你装的是新版**：`套件中心 → Gopeed → 版本`，或看
+> `/var/packages/gopeed/var/gopeed.log` 的 `starting gopeed <版本>` 那一行。
 
 ## 三之八、浏览器扩展连不上 / 双栈监听（1.9.3-29）
 
@@ -817,6 +847,8 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 | 24 | `postinst` 五条路径 | ✅ A 命令行升级→保留密码/目录/端口并补 token；B 勾选覆盖+空密码→`WEB_PASS=""`；C 全新+空密码→空；D 全新命令行→空+默认共享目录；E 老 conf 无 token→自动补 |
 | 25 | 空密码真机生效 | ✅ `WEB_PASS=""` 重启后进程无 `-u/-p`（也没有 `-T`），`GET /api/v1/config` 免 token 200、`/` 200 |
 | 26 | 扩展商店（1.9.3-32） | ✅ `api.cgi` 转发 `X-Target-Uri` 后 `/api/v1/proxy` 由 500 → 200；DSM 窗口里「市场」渲染出 9+ 张卡片（24 个 proxy 请求全 200）；同源下不再有请求被误改写到 api.cgi |
+| 27 | **全新安装（1.9.3-33）** | ✅ 卸载→清空 `@appdata`/`@appconf`/`@appshare`→安装：conf 写入 51413/4662/4672 + API_TOKEN，首启引擎即拿到三个端口，日志 `starting gopeed 1.9.3-33 (x86_64)` + `engine: ... bt=51413 ed2k=4662/4672` + `settings verified` |
+| 27 | **全新安装（1.9.3-33）** | ✅ 卸载→清空 `@appdata`/`@appconf`/`@appshare`→安装：conf 写入 51413/4662/4672 + API_TOKEN，首启引擎即拿到三个端口，日志 `starting gopeed 1.9.3-33 (x86_64)` + `engine: ... bt=51413 ed2k=4662/4672` + `settings verified` |
 
 ### 已知问题
 

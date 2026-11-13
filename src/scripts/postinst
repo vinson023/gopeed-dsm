@@ -24,12 +24,13 @@ new_token() {
     head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n'
 }
 
-# Re-running the wizard normally must NOT overwrite stored settings: a
-# command-line upgrade passes no wizard variables at all, and the form shows
-# defaults (not the live values), so applying it would reset account, ports and
-# download dir -- the "settings disappeared after upgrade" bug. The wizard has
-# an opt-in checkbox for the case where the user really does want to re-apply
-# it (e.g. clearing the password).
+# Re-running the wizard normally must NOT overwrite stored settings. The form
+# shows the *defaults*, not the live values - and DSM hands those defaults to
+# this script even for `synopkg install` from the command line (verified: a CLI
+# fresh install arrives with wizard_web_pass="gopeed"), so applying them blindly
+# would reset account, ports and download dir: the "settings disappeared after
+# upgrade" bug. The wizard's last page has an opt-in checkbox for the case where
+# the user really does want to re-apply it (e.g. clearing the password).
 RESET=0
 case "${wizard_reset_config:-false}" in
     true|TRUE|True|yes|YES|1|on) RESET=1 ;;
@@ -46,8 +47,7 @@ else
 fi
 
 if [ -f "$CONF" ] && [ "$RESET" = "0" ]; then
-    # keep what the user set, only backfill keys a newer build introduced
-    WEB_USER="${WEB_USER:-admin}"
+    # keep what the user set, only backfill keys a newer build introduced    WEB_USER="${WEB_USER:-admin}"
     WEB_PASS="${WEB_PASS-}"
     DOWNLOAD_DIR="${DOWNLOAD_DIR:-$DEFAULT_DL}"
     BT_PORT="${BT_PORT:-51413}"
