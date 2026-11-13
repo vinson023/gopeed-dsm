@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-20"
-CHANGELOG = "1.9.3-20 serve the bundle from /web/ so a stale service worker from older builds cannot shadow it"
+PKG_VERSION = "1.9.3-21"
+CHANGELOG = "1.9.3-21 ship the UI fonts (Roboto/Gopeed/Cupertino) so text renders; shorter wizard labels"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

@@ -350,6 +350,35 @@ caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }
 `flutter_bootstrap.js` 末尾 `_flutter.loader.load({ serviceWorkerSettings: ... })`
 改成 `_flutter.loader.load({})`。否则子目录下注册的 SW 会把旧版本缓存住。
 
+**6）字体必须一起抓，否则整个界面没有文字**
+
+Flutter 的 `FontManifest.json` 里列了三处字体，路径容易抓错（注意 `assets/assets/` 是**两个**
+`assets`，Flutter 会自己再加一层前缀）：
+
+| 用途 | 服务器上的真实路径 | 抓错会怎样 |
+|---|---|---|
+| 正文字体 | `assets/gstatic/roboto/v32/KFOmCnqEu92Fr1Me4GZLCzYlKw.woff2` | 所有文字不显示 |
+| Gopeed 图标字体 | `assets/assets/fonts/Gopeed.ttf` | 部分图标缺失 |
+| Cupertino 字体 | `assets/packages/cupertino_icons/assets/CupertinoIcons.ttf` | iOS 风格图标缺失 |
+| Material 图标 | `assets/fonts/MaterialIcons-Regular.otf` | 图标全变方块 |
+
+抓漏时的控制台提示（这些不是"可以忽略的警告"，而是**文本渲染会直接失败**）：
+
+```
+Font family Roboto not found (404) at assets/gstatic/roboto/v32/KFOmCnqEu92Fr1Me4GZLCzYlKw.woff2
+Font family Gopeed not found (404) at assets/assets/fonts/Gopeed.ttf
+```
+
+实测现象：界面布局、图标、按钮全都正常，**唯独没有任何文字** —— 因为 CanvasKit
+没有可用字形。
+
+**7）安装向导的 desc 必须短**
+
+`WIZARD_UIFILES/install_uifile` 里 `subitems[].desc` 渲染在输入框左侧、**单行**，
+超长就溢出（截图里出现过"测套件会启动失败。访问端口固定为…"被裁掉开头、
+后面的端口输入框标签直接消失）。控制在 10 个汉字以内，例如
+`"默认 51413"`、`"留空用共享目录"`；长的解释放到 README / 发布说明里。
+
 ### 仍然保留的隧道
 
 `bin/gopeed-tunnel.py` 现在只服务**直连 38099** 的场景（有人直接收藏
