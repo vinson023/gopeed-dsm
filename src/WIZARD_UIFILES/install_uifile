@@ -48,7 +48,7 @@
         "subitems": [
           {
             "key": "wizard_download_dir",
-            "desc": "留空用共享目录",
+            "desc": "留空用套件目录；填共享文件夹要先给 gopeed 读写权限",
             "defaultValue": "",
             "validator": {
               "allowBlank": true,

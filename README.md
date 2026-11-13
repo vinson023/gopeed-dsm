@@ -39,12 +39,21 @@
 
 ### 下载到自己的共享文件夹
 
-套件默认以 `package` 用户运行，对共享文件夹没有写权限。要用自己的文件夹：
+套件以套件用户 `gopeed` 运行，DSM 共享文件夹用的是 **ACL**（`ls -l` 里那个 `+`），
+所以光改属主没用，必须先给它一条 ACE：
 
 1. 「控制面板 → 共享文件夹 → 选中目标文件夹 → 编辑 → 权限 → 用户或组选「系统内部用户」→ 勾选 `gopeed` 的读写」；
+   或者 SSH 一条命令：
+   ```bash
+   sudo /usr/syno/bin/synoacltool -add /volume1/downloads "user:gopeed:allow:rwxpdDaARWc--:fd--"
+   ```
 2. 在安装向导的「默认下载目录」填它的绝对路径，例如 `/volume1/downloads`。
 
-否则服务启动会失败，日志（`/volume1/@appdata/gopeed/gopeed.log`）会写明目录不可写。
+没授权时**服务照样能启动、设置页也照样显示你填的路径**，只是任务会以
+`permission denied` 失败，日志会写 `ERROR: download dir not writable: ...`。
+授权后**不需要重启套件**，直接重试任务即可。
+
+> 套件是 `run-as=package` 的未签名包，DSM 不给任何 root 钩子，所以这一步没法由安装程序代做。
 
 ### HTTPS
 

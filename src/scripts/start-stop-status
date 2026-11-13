@@ -153,22 +153,24 @@ start_service() {
     fi
     mkdir -p "$VAR/storage" 2>/dev/null
 
-    # A wrong download dir must not keep the service down: fall back to the
-    # package share (always writable) and record why.
+    # A wrong download dir must not keep the service down, but it must not be
+    # silently replaced either: the settings page would then show a folder the
+    # user never asked for, while the wizard value looked applied. postinst
+    # already grants the ACL, so a non-writable dir here means something is
+    # genuinely wrong - keep it and say so.
     if [ -n "$DOWNLOAD_DIR" ]; then
         [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
         if [ ! -w "$DOWNLOAD_DIR" ]; then
-            log "download dir not writable: ${DOWNLOAD_DIR} (grant it under Control Panel > Shared Folder > Edit > Permissions > System internal users > ${PKG}); using the package share instead"
-            DOWNLOAD_DIR=""
+            log "ERROR: download dir not writable: ${DOWNLOAD_DIR} - downloads will fail until this is fixed."
+            log "       grant it in Control Panel > Shared Folder > Edit > Permissions > System internal users > ${PKG} (read/write), or run: /usr/syno/bin/synoacltool -add ${DOWNLOAD_DIR} \"user:${PKG}:allow:rwxpdDaARWc--:fd--\" ; then restart the package"
         fi
-    fi
-    if [ -z "$DOWNLOAD_DIR" ]; then
+    else
         DOWNLOAD_DIR="$(printf '%s' "$VAR" | cut -d/ -f1-2)/@appshare/${PKG}/downloads"
-    fi
-    [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
-    if [ ! -w "$DOWNLOAD_DIR" ]; then
-        log "fallback download dir not writable either: ${DOWNLOAD_DIR}"
-        return 1
+        [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
+        if [ ! -w "$DOWNLOAD_DIR" ]; then
+            log "fallback download dir not writable either: ${DOWNLOAD_DIR}"
+            return 1
+        fi
     fi
 
     if port_in_use "$WEB_PORT"; then

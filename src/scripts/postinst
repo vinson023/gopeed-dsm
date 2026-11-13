@@ -137,13 +137,48 @@ fi
 OWNER="$(stat -c %U "$VAR" 2>/dev/null)"
 if [ -n "$OWNER" ]; then
     chown -R "$OWNER" "$VAR" "$ETC" 2>/dev/null
-    mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
-    chown "$OWNER" "$DOWNLOAD_DIR" 2>/dev/null
-    # NOTE: no writability probe here. `su -c "test -w"` disagrees with the
-    # real ACL result on DSM (it reported a writable share as read-only), so
-    # the check lives in start-stop-status instead, which already runs as the
-    # package user and falls back to the package share with a clear log line.
 fi
+
+# Give the package user write access to the download folder the wizard asked
+# for. postinst runs as root, so a fresh install with /volume1/downloads can be
+# made to work right away instead of falling back to the package share because
+# nobody had granted the ACL yet - that silent fallback is why the settings page
+# showed a different directory than the wizard.
+#
+# DSM shares are ACL based (`ls -l` shows a trailing `+`, and the mode bits are
+# usually 000): chown alone does not grant access, synoacltool does.
+grant_download_dir() {
+    local dir="$1" acltool="/usr/syno/bin/synoacltool"
+    [ -n "$dir" ] || return 0
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2>/dev/null || return 0
+        # we created it, so giving it away is harmless
+        [ -n "$OWNER" ] && chown "$OWNER" "$dir" 2>/dev/null
+    fi
+    [ -x "$acltool" ] || return 0
+    if "$acltool" -get "$dir" 2>/dev/null | grep -q "user:${PKG}:"; then
+        return 0
+    fi
+    # conf/privilege is run-as=package, so this script is NOT root and cannot
+    # change a share's ACL ("synoacltool: Access deny"). DSM does not give a
+    # third-party package any privileged hook, so the user has to grant it once
+    # in Control Panel (or with synoacltool) - say so plainly instead of
+    # pretending it worked.
+    if [ "$(id -u)" != "0" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') acl: ${dir} has no ${PKG} ace yet - grant it in Control Panel > Shared Folder > Edit > Permissions > System internal users, otherwise downloads there fail with permission denied" \
+            >> "$VAR/install.log" 2>/dev/null
+        return 0
+    fi
+    if "$acltool" -add "$dir" "user:${PKG}:allow:rwxpdDaARWc--:fd--" \
+            >> "$VAR/install.log" 2>&1; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') acl: granted ${PKG} rw on ${dir}" \
+            >> "$VAR/install.log" 2>/dev/null
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') acl: could not grant ${PKG} rw on ${dir}" \
+            >> "$VAR/install.log" 2>/dev/null
+    fi
+}
+grant_download_dir "${DOWNLOAD_DIR:-}"
 
 chmod 755 "$DEST/bin/gopeed" 2>/dev/null
 exit 0

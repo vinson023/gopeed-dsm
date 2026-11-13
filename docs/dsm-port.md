@@ -761,6 +761,81 @@ if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) || u.slice(0,2) === "//") {
 }
 ```
 
+## 三之十、向导目录不生效 / 任务不动 / 删除报错（1.9.3-34）
+
+### 1. 向导里填 `/volume1/downloads`，进去却变成 `@appshare/gopeed/downloads`
+
+旧版 `start-stop-status` 在目录不可写时会**静默回退**到套件共享目录：
+
+```bash
+if [ ! -w "$DOWNLOAD_DIR" ]; then
+    DOWNLOAD_DIR=""            # 然后被替换成 @appshare/gopeed/downloads
+fi
+```
+
+于是引擎拿到的是回退目录，设置页当然不是用户填的那个。更糟的是：用户随后去
+「控制面板」把 `gopeed` 的权限加上，**不回退逻辑也不会重跑**，看起来就像"给了权限也没用"。
+
+现在改成保留用户的选择，只把问题写到日志：
+
+```bash
+if [ ! -w "$DOWNLOAD_DIR" ]; then
+    log "ERROR: download dir not writable: ${DOWNLOAD_DIR} - downloads will fail until this is fixed."
+    # 不再把 DOWNLOAD_DIR 清空
+fi
+```
+
+这样设置页永远是**你填的路径**，任务失败时会明确报 `permission denied`，
+授权之后直接重试即可，不用重启套件。
+
+### 2. 为什么安装程序不能自己授权
+
+`conf/privilege` 是 `run-as=package`，`postinst` 以套件用户身份运行，
+调 `synoacltool -add` 直接返回：
+
+```
+(synoacltool.c, 320) Access deny
+```
+
+试过把这段逻辑搬到 `ui/api.cgi`（DSM 的 CGI 有时是 root 跑的），实测**不行**：
+
+| 场景 | euid |
+|---|---|
+| 手工 `sudo` 建的 `probe.cgi`（属主 root） | 0 |
+| 套件自带的 `api.cgi`（属主 `gopeed`） | 154548 |
+
+DSM 的 CGI 是按**文件属主**决定身份的，套件文件安装后都归 `gopeed`，
+所以这条路走不通。结论：这一步只能由用户在控制面板（或 SSH 的 `synoacltool`）做一次。
+
+### 3. 任务一直不动
+
+先看任务状态和日志：
+
+- 目录没权限 → 任务的 `error` 是 `permission denied`，日志有上面那行 `ERROR`
+- BT / 磁力 → 没有 peer 就是 0%，与目录无关（`/api/v1/tasks` 里 `status=ready` 但 `downloaded` 不涨）
+- HTTP 正常但卡住 → 检查 NAS 出网、DNS、代理
+
+实测：权限就绪后 HTTP 任务 10 秒内落盘，属主 `gopeed`。
+
+### 4. 删除任务报 `invalid memory address or nil pointer dereference`
+
+这是**上游 1.9.3 的 panic**，被 `pkg/rest/server.go` 的 recover 中间件接住，
+原文当成错误信息返回给前端，所以 UI 弹的是那句 Go 的 panic 文本。日志里对应：
+
+```
+http server panic: DELETE /api/v1/tasks/<id>
+```
+
+复现过的触发路径：任务的 fetcher 初始化失败（例如目标目录不可写、种子解析崩溃）后
+仍留在列表里，`DELETE` 时解引用了空 fetcher。规避办法：
+
+1. 先修好下载目录权限；
+2. `synopkg restart gopeed` 让引擎重新加载任务，再删；
+3. 还删不掉就用批量接口（`DELETE /api/v1/tasks`，body `{"ids":["<id>"]}`），
+   它走的是另一条代码路径，多数情况能成功。
+
+本仓库不修补上游二进制，若稳定复现请带上日志里的 panic 栈提到 Issues。
+
 ## 四、启动参数
 
 ```
