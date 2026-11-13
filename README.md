@@ -10,8 +10,8 @@
 - 下载文件属主是套件用户（`gopeed`），可在 File Station 中正常管理
 - 卸载时可选择是否一并清空配置与任务数据
 
-> **验证状态**：包结构与全部脚本已在真实 Linux 上按 DSM 生命周期完整跑通
-> （安装回调 → 启动 → 下载 → 重启 → 停止），但**尚未在真实群晖设备上安装验证**。
+> **验证状态**：已在 DSM 7.4.1（x86_64）真机安装并运行 —— 安装、启动、下载、
+> 重启后配置保持、IPv6 双栈均通过。ARM 包与套件中心的向导界面仍待验证，
 > 详见 [docs/dsm-port.md](docs/dsm-port.md)。
 
 ## 安装
@@ -73,6 +73,8 @@ python build.py --port 38123        # 换端口
 #   build/gopeed-<version>-armv8.spk
 ```
 
+`build.py` 用 `tarfile` 的 `GNU_FORMAT` 打包，`.spk` 外层不压缩（DSM 7 的硬要求）。
+
 `build.py` 会把端口写入 `INFO`（`adminport` / `checkport`）、`scripts/preinst`、
 `scripts/postinst`、`scripts/start-stop-status` 和向导文案，并计算 `package.tgz`
 的 MD5 写进 `INFO` 的 `checksum`。
@@ -107,12 +109,17 @@ python build.py --port 38123        # 换端口
 4. **IPv6 双栈**：Gopeed 用 `"%s:%d"` 拼地址，所以传 `[::]`（带方括号）而不是 `::`，
    在 `bindv6only=0` 的内核上是双栈监听；否则退回 `0.0.0.0`。
 5. **端口占用提前拦截**：`preinst` 里检查 38099，占用则中止安装（装完再改端口只能重装）。
+6. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
+   都报「套件文件格式不正确」。只有里面的 `package.tgz` 才压缩。这条最容易踩，
+   详见 [docs/dsm-port.md](docs/dsm-port.md) 第三节。
 
 ## 已知限制
 
 - **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
-- **未在真机验证**：安装/卸载向导、桌面图标、`data-share` 的实际表现依赖 DSM 运行时，
-  建议先在测试机上安装确认后再长期使用。
+- **部分界面未验证**：安装/卸载向导的字段渲染、主菜单图标、共享文件夹授权尚未在真机点过
+  （安装是通过 `synopkg` 命令行完成的），首次使用请留意。
+- **极少数情况下首次建任务会崩**：上游 1.9.3 在 `Fetcher.Resolve` 出现过一次
+  nil pointer panic，重启后同样的任务正常完成，之后未再复现。
 - **ARM 包未在真机运行**：仅通过架构字段与静态校验。
 - **套件用户与共享文件夹**：默认只能写 `gopeed` 共享文件夹；其他目录需要在
   「套件中心 → 权限」里授权。

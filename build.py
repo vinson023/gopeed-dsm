@@ -126,8 +126,10 @@ def build_one(arch, goarch, port):
     ])
 
     # payload archive (paths are relative to /var/packages/gopeed/target)
+    # GNU format on purpose: Python defaults to PAX, and DSM's package parser
+    # rejects PAX extended headers with "invalid file format".
     tgz = os.path.join(dst, "package.tgz")
-    with tarfile.open(tgz, "w:gz") as tar:
+    with tarfile.open(tgz, "w:gz", format=tarfile.GNU_FORMAT) as tar:
         for entry in sorted(os.listdir(payload)):
             tar.add(os.path.join(payload, entry), arcname=entry, filter=mode_filter)
 
@@ -145,7 +147,10 @@ def build_one(arch, goarch, port):
         "scripts",
         "WIZARD_UIFILES",
     ]
-    with tarfile.open(spk, "w:gz") as tar:
+    # The .spk itself must be an *uncompressed* tar on DSM 7 - Package Center
+    # rejects a gzip-wrapped one with "invalid file format". Only package.tgz
+    # inside it is compressed.
+    with tarfile.open(spk, "w", format=tarfile.GNU_FORMAT) as tar:
         for name in includes:
             full = os.path.join(dst, name)
             if not os.path.exists(full):
