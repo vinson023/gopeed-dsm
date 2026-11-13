@@ -16,7 +16,7 @@ DSM 7 的规定（官方开发者文档）：
 | | fnOS 版 | DSM 版 |
 |---|---|---|
 | 运行身份 | `run-as=root` + `setpriv` 降权到 NAS 用户 | `run-as=package`（套件用户 `gopeed`） |
-| 写用户目录 | 以该 NAS 用户身份写 | 需要「套件中心 → 权限」授权共享文件夹 |
+| 写用户目录 | 以该 NAS 用户身份写 | 需要在「控制面板 → 共享文件夹 → 选中目标文件夹 → 编辑 → 权限 → 用户或组选「系统内部用户」→ 勾选 `gopeed` 的读写」里授权 |
 | 文件属主 | 选的 NAS 用户 | `gopeed` |
 | HTTPS | 内置隧道，复用 fnOS 证书按 SNI 选择 | 用 DSM 原生反向代理 |
 | 依赖 | 系统 `python3` | 只用 `bash` + `curl`（DSM 7 没有 python3） |
@@ -465,7 +465,7 @@ fi
 
 DSM 共享文件夹的权限是 **ACL**，`ls -l` 显示 `drwxrwxrwx+` 不代表套件用户能写
 （那个 `+` 就是 ACL）。用户如果在向导里填了 `/volume1/downloads` 却没在
-「套件中心 → 套件 → 权限」里授权，`test -w` 就是失败。
+「控制面板 → 共享文件夹 → 选中目标文件夹 → 编辑 → 权限 → 用户或组选「系统内部用户」→ 勾选 `gopeed` 的读写」里授权，`test -w` 就是失败。
 
 早期版本直接 `return 1`，导致**整个套件起不来**（`status: start_failed`）。
 正确做法是回退：
@@ -576,7 +576,7 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 
 - 套件中心 GUI 安装时的向导渲染（`password`、`singleselect`）
 - DSM 主菜单图标是否指向 `http://host:38099`
-- 「套件中心 → 权限」授权后写入自定义共享文件夹
+- 「控制面板 → 共享文件夹 → 选中目标文件夹 → 编辑 → 权限 → 用户或组选「系统内部用户」→ 勾选 `gopeed` 的读写」授权后写入自定义共享文件夹
 - 覆盖升级（同名 package、更高 version）
 - 卸载时「全部清空」是否删净 `@appconf` / `@appdata`
 - ARM 机型

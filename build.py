@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-25"
-CHANGELOG = "1.9.3-25 upgrades keep the existing config; a non-writable download dir falls back to the package share instead of blocking startup"
+PKG_VERSION = "1.9.3-27"
+CHANGELOG = "1.9.3-27 an empty wizard password now falls back to the default instead of disabling login; hint points at Shared Folder permissions"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

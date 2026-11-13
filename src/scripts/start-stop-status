@@ -160,7 +160,7 @@ start_service() {
     if [ -n "$DOWNLOAD_DIR" ]; then
         [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
         if [ ! -w "$DOWNLOAD_DIR" ]; then
-            log "download dir not writable: ${DOWNLOAD_DIR} (grant it in Package Center > ${PKG} > Permission); using the package share instead"
+            log "download dir not writable: ${DOWNLOAD_DIR} (grant it under Control Panel > Shared Folder > Edit > Permissions > System internal users > ${PKG}); using the package share instead"
             DOWNLOAD_DIR=""
         fi
     fi

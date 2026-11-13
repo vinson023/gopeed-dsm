@@ -28,7 +28,7 @@
         "subitems": [
           {
             "key": "wizard_web_pass",
-            "desc": "留空则不启用",
+            "desc": "默认 gopeed",
             "defaultValue": "gopeed",
             "validator": {
               "allowBlank": true,

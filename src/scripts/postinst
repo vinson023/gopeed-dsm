@@ -33,7 +33,7 @@ if [ -f "$CONF" ]; then
         >> "$VAR/install.log" 2>/dev/null
 else
     WEB_USER="${wizard_web_user:-admin}"
-    WEB_PASS="${wizard_web_pass-gopeed}"
+    WEB_PASS="${wizard_web_pass:-gopeed}"   # empty wizard value must NOT disable auth
     DOWNLOAD_DIR="${wizard_download_dir:-}"
     BT_PORT="${wizard_bt_port:-51413}"
     ED2K_PORT="${wizard_ed2k_port:-4662}"
