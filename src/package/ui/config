@@ -4,22 +4,14 @@
             "type": "app",
             "title": "Gopeed",
             "appWindow": "SYNO.SDS.Gopeed.MainWindow",
-            "desc": "HTTP / BitTorrent / ED2K 下载器",
             "icon": "images/icon_{0}.png",
             "allowMultiInstance": false,
-            "allowStandalone": true,
-            "allowSharing": true,
-            "allUsers": true,
-            "grantPrivilege": "all",
-            "advanceGrantPrivilege": true,
             "depend": ["SYNO.SDS.Gopeed.MainWindow"]
         },
         "SYNO.SDS.Gopeed.MainWindow": {
             "type": "lib",
             "title": "Gopeed",
-            "icon": "images/icon_{0}.png",
-            "depend": ["SYNO.SDS.Gopeed.Utils"]
-        },
-        "SYNO.SDS.Gopeed.Utils": []
+            "icon": "images/icon_{0}.png"
+        }
     }
 }

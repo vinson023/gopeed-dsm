@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-16"
-CHANGELOG = "1.9.3-16 launcher window (DSM CSP blocks cross-port iframe)"
+PKG_VERSION = "1.9.3-17"
+CHANGELOG = "1.9.3-17 same-origin web UI inside the DSM window (CORS tunnel)"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {
@@ -55,9 +55,6 @@ def is_exec(arcname):
 
 
 def mode_filter(ti):
-    # never ship python bytecode caches
-    if "__pycache__" in ti.name or ti.name.endswith(".pyc"):
-        return None
     # never ship python bytecode caches
     if "__pycache__" in ti.name or ti.name.endswith(".pyc"):
         return None

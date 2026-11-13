@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A modern download manager.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Gopeed">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Gopeed</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!--
+    DSM integration shim.
+
+    This page is served by DSM's own nginx from /webman/3rdparty/gopeed/app/,
+    so it is SAME ORIGIN with the DSM desktop. That is required because DSM
+    sends `frame-src 'self'` - an iframe pointing at http://nas:38099 (another
+    port = another origin) is blocked by the browser.
+
+    The static bundle lives here, but the engine still listens on 38099.
+    DSM's CSP allows `connect-src http: https:`, so XHR/fetch to that port is
+    fine; only the URLs have to be rewritten, because Gopeed asks for both
+    "api/v1/x" (relative) and "/api/v1/x" (absolute root).
+  -->
+  <script>
+  (function () {
+    var PORT = "__PORT__";
+    var API_ORIGIN = location.protocol + "//" + location.hostname + ":" + PORT;
+
+    function rewrite(u) {
+      if (typeof u !== "string" || u.indexOf("api/") < 0) { return u; }
+      var m = u.match(/^(?:https?:\/\/[^\/]*)?\/?(api\/.*)$/);
+      return m ? API_ORIGIN + "/" + m[1] : u;
+    }
+
+    var open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      try { arguments[1] = rewrite(url); } catch (e) {}
+      return open.apply(this, arguments);
+    };
+
+    if (window.fetch) {
+      var origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        try {
+          if (typeof input === "string") {
+            input = rewrite(input);
+          } else if (input && input.url) {
+            var next = rewrite(input.url);
+            if (next !== input.url) { input = new Request(next, input); }
+          }
+        } catch (e) {}
+        return origFetch.call(this, input, init);
+      };
+    }
+
+    if (window.EventSource) {
+      var ES = window.EventSource;
+      var PatchedES = function (url, cfg) { return new ES(rewrite(url), cfg); };
+      PatchedES.prototype = ES.prototype;
+      window.EventSource = PatchedES;
+    }
+  })();
+  </script>
+</head>
+<body>
+<script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

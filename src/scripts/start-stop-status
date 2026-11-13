@@ -2,10 +2,10 @@
 # start / stop / status for the Gopeed engine (+ optional TLS tunnel).
 # DSM runs this script as the package user (conf/privilege: run-as=package).
 #
-# HTTP and HTTPS on the same port: when a certificate is available the engine
-# binds 127.0.0.1:<port+1> and gopeed-tunnel.py fronts <port>, deciding per
-# connection (first byte 0x16 = TLS). Without python3/certificate it falls
-# back to binding the public port directly (HTTP only).
+# The engine always binds 127.0.0.1:<port+1>; gopeed-tunnel.py fronts <port>.
+# It serves http and https on the same port (first byte 0x16 = TLS) and injects
+# the CORS headers the DSM desktop needs to call this port from its own origin.
+# Only if python3 is missing does the engine bind the public port directly.
 set -u
 
 PKG="gopeed"
@@ -77,10 +77,12 @@ find_python() {
     return 1
 }
 
+# The tunnel is required even without a certificate: the DSM desktop loads the
+# bundle from /webman/3rdparty/gopeed/app/ (same origin) and calls this port
+# cross-origin, so the CORS headers have to be injected here. Without a
+# certificate the tunnel simply speaks plain HTTP.
 tunnel_available() {
     [ -f "$TUNNEL_PY" ] || return 1
-    [ -f "$VAR/tls/cert.pem" ] || return 1
-    [ -f "$VAR/tls/privkey.pem" ] || return 1
     find_python >/dev/null 2>&1 || return 1
     return 0
 }

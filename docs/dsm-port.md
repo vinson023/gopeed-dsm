@@ -96,72 +96,196 @@ with tarfile.open(spk) as t:
 print(open(spk,'rb').read(262)[257:262])   # b'ustar'，而不是 gzip 的 1f8b
 ```
 
-## 三之二、DSM 桌面集成（主菜单图标 + 窗口内打开）
+## 三之二、DSM 桌面集成（主菜单图标 + 窗口内嵌）
 
-只写 `adminport` 时，套件只会出现在「套件中心」，套件中心的"打开"按钮会
-**新开一个页签**指向 `http://host:38099`，主菜单（桌面）里没有图标。
+只写 `adminport` 时，套件只会出现在「套件中心」，那里的"打开"按钮会**新开一个
+页签**指向 `http://host:38099`，主菜单（桌面）里没有图标。
 
-要让应用出现在主菜单并在 DSM 窗口内打开，需要三样东西：
+让应用出现在主菜单、并在 DSM 窗口内打开，需要：
 
-1. `INFO` 里声明 `dsmuidir="ui"` 和 `dsmappname="SYNO.SDS.Gopeed.Application"`；
-2. `package.tgz` 里带 `ui/config`（Ext 组件声明）和 `ui/Gopeed.js`；
-3. DSM 会把 `ui/` 软链到 `/usr/syno/synoman/webman/3rdparty/gopeed/`，
-   主菜单图标从 `ui/images/icon_{16,24,32,48}.png` 取图。
+1. `INFO` 里声明 `dsmuidir="ui"` 与 `dsmappname="SYNO.SDS.Gopeed.Application"`；
+2. `package.tgz` 里带 `ui/config`（类声明）、`ui/Gopeed.js`、`ui/images/icon_{16,24,32,48}.png`；
+3. DSM 自动把 `ui/` 软链到 `/usr/syno/synoman/webman/3rdparty/gopeed/`。
 
-**关键**：DSM 7.2 起，`config` 里的 `"type": "legacy" | "url"` 已不再决定打开方式
-（`legacy` 曾表示 iframe 内嵌）。现在必须按 Ext 应用来声明，由
-`getMainHtml()` 返回 iframe：
-
-```javascript
-Ext.apply(SYNO.SDS.Gopeed.Utils, function () {
-    return {
-        getMainHtml: function () {
-            return '<iframe src="http://<nas>:38099/" style="width:100%;height:100%;border:0"></iframe>';
-        }
-    };
-}());
-```
-
-`config` 里对应的三个类：
+`ui/config` 只需要两个类（照这台 NAS 上能正常工作的第三方套件 `arc-control` 的写法）：
 
 ```json
-{ "Gopeed.js": {
-    "SYNO.SDS.Gopeed.Application": { "type": "app", "appWindow": "SYNO.SDS.Gopeed.MainWindow", ... },
-    "SYNO.SDS.Gopeed.MainWindow":  { "type": "lib", "depend": ["SYNO.SDS.Gopeed.Utils"] },
-    "SYNO.SDS.Gopeed.Utils": [] } }
+{
+  "Gopeed.js": {
+    "SYNO.SDS.Gopeed.Application": {
+      "type": "app",
+      "title": "Gopeed",
+      "appWindow": "SYNO.SDS.Gopeed.MainWindow",
+      "icon": "images/icon_{0}.png",
+      "allowMultiInstance": false,
+      "depend": ["SYNO.SDS.Gopeed.MainWindow"]
+    },
+    "SYNO.SDS.Gopeed.MainWindow": {
+      "type": "lib",
+      "title": "Gopeed",
+      "icon": "images/icon_{0}.png"
+    }
+  }
+}
 ```
+
+`ui/Gopeed.js` 里 `AppInstance` + `AppWindow`，窗口内容是一个 `xtype: "box"` 的
+iframe（必须用 `autoEl`，见下）：
+
+```javascript
+Ext.define("SYNO.SDS.Gopeed.Application", {
+    extend: "SYNO.SDS.AppInstance",
+    appWindowName: "SYNO.SDS.Gopeed.MainWindow",
+    constructor: function () { this.callParent(arguments); }
+});
+
+Ext.define("SYNO.SDS.Gopeed.MainWindow", {
+    extend: "SYNO.SDS.AppWindow",
+    constructor: function (cfg) {
+        this.callParent([Ext.apply({
+            layout: "fit", border: false,
+            width: 1200, height: 800, minWidth: 800, minHeight: 600,
+            items: [{
+                xtype: "box",
+                autoEl: { tag: "iframe",
+                          src: "/webman/3rdparty/gopeed/app/index.html?v=" + Date.now(),
+                          style: "width:100%;height:100%;border:none;" }
+            }]
+        }, cfg)]);
+    }
+});
+```
+
+> **踩过的坑：一直显示"应用正在打开中"**
+> 最早的版本在 `MainWindow` 的 constructor 里读了 `cfg.appInstance`，并额外声明了
+> `SYNO.SDS.Gopeed.Utils`（在 config 里写成空数组 `[]`）。这两处任意一个出错都会让
+> DSM 的窗口停在 loading 遮罩上 —— 桌面显示"一直在打开中"，永远不出画面。
+> 现在的版本和 `arc-control` 完全同构：没有多余的类、不读未定义的属性、
+> 只把 `cfg` 透传给 `AppWindow`。
 
 验证：
 
 ```bash
-ls -la /usr/syno/synoman/webman/3rdparty/ | grep gopeed   # 软链是否存在
-curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/Gopeed.js
+ls -ld /usr/syno/synoman/webman/3rdparty/gopeed          # 软链
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/Gopeed.js
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/app/index.html
 ```
 
-两者都正常后，刷新 DSM 页面（或重新登录）主菜单就会出现图标。
+## 三之三、CSP：为什么 iframe 必须同源（这是最关键的一条）
 
-**混合内容限制**：Gopeed 只有 HTTP。如果 DSM 本身用 https 打开，iframe 里的
-`https://host:38099` 连不上（没有 TLS），`http://` 又会被浏览器拦截。这种情况下
-`getMainHtml()` 会返回一段说明而不是空白的 iframe，并提示改用
-`http://host:5000` 访问 DSM，或给 38099 配反向代理。
+DSM 每个页面都带这个响应头（`curl -sI http://nas:5000/` 可直接看到）：
 
-## 三之三、HTTP 与 HTTPS 同端口
+```
+Content-Security-Policy:
+  base-uri 'self';
+  connect-src data: ws: wss: http: https:;
+  default-src 'self' 'unsafe-eval' data: blob: https://*.synology.com ...;
+  font-src 'self' data: https://*.googleapis.com https://*.gstatic.com;
+  frame-ancestors 'self';
+  frame-src 'self' data: blob: https://*.synology.com https://*.synology.cn;
+  script-src 'self' 'unsafe-eval' data: blob: https://maps.google.com ...;
+  style-src 'self' 'unsafe-inline' https://*.googleapis.com;
+X-Frame-Options: SAMEORIGIN
+```
 
-DSM 桌面 iframe 继承 DSM 页面的协议：页面是 https，iframe 就必须是 https；页面是 http，
-iframe 用 http。Gopeed 只有 HTTP，所以套件里带了一个小隧道：
+两个要点：
+
+1. `frame-src 'self'` 里的 **`self` = scheme + host + port**。`http://nas:38099`
+   和 DSM 的 `http://nas:5000` 端口不同就是不同源，浏览器**直接拒绝**加载这个
+   iframe，控制台报 `Refused to frame ... frame-src 'self'`。窗口因此全白，
+   **与协议、证书、iframe 高度都无关**（我最初误判成"高度 0"，走了两轮弯路）。
+2. `connect-src` 却是 **`http: https:` 全放开** —— 也就是说同源页面里的
+   JS 可以自由 fetch 到 38099，只是需要 CORS 头。
+
+所以唯一可行的结构是：
+
+```
+iframe（同源）  /webman/3rdparty/gopeed/app/index.html
+      │  静态资源由 DSM nginx 直接从 target/ui/app/ 提供
+      ▼
+   Gopeed 前端（Flutter）
+      │  XHR/fetch → http://nas:38099/api/...
+      ▼
+   gopeed-tunnel.py（注入 Access-Control-Allow-*）
+      ▼
+   gopeed 引擎（127.0.0.1:38100）
+```
+
+试过并排除的其它路子：
+
+| 方案 | 结果 |
+|---|---|
+| iframe 指向 `http://nas:38099` / `https://nas:38099` | ❌ 跨端口，`frame-src 'self'` 拦截 |
+| 让 nginx 反代 `/gopeed` 到 38099 | ❌ 套件以 package 用户运行，写不了 nginx 配置也 reload 不了 |
+| 改 CSP 放行该端口 | ❌ 头由 DSM 主程序输出，`/etc/nginx`、`webman` 目录里都搜不到 |
+| `data:` / `blob:` iframe | ❌ CSP 允许，但子页面继承父 CSP，`script-src 'self'` 不允许加载 38099 的 JS |
+| 窗口里塞 `<iframe>` 字符串（`html:`） | ❌ Ext 容器不给子节点分配高度，iframe 算出 0 |
+
+## 三之四、同源方案怎么落地
+
+**1）前端资源随包分发**
+
+上游的 web 构建是 Go 内嵌的，磁盘上没有独立文件。构建时从运行中的引擎抓取：
+
+```bash
+B=http://127.0.0.1:38099
+for p in index.html flutter_bootstrap.js main.dart.js manifest.json favicon.png \
+         canvaskit/canvaskit.js canvaskit/canvaskit.wasm \
+         assets/AssetManifest.bin assets/FontManifest.json \
+         assets/fonts/MaterialIcons-Regular.otf \
+         icons/Icon-192.png icons/Icon-512.png; do
+    mkdir -p "ui/app/$(dirname $p)"
+    curl -s -o "ui/app/$p" "$B/$p"
+done
+# 注意 index.html 会被 301 到 /，取的时候要 -L，或者直接抓 /
+```
+
+好消息：**Gopeed 的前端本来就用相对路径**（`index.html` 里没有 `<base href="/">`，
+`flutter_bootstrap.js` 用 `document.baseURI` 解析），所以放进子目录不会 404。
+
+**2）`index.html` 里改写 API 地址**
+
+Gopeed 的请求路径是**混着写的**：`api/v1/resolve`（相对）和 `/api/v1/tasks`（绝对根）
+都有。相对的那种在子目录下会变成 `/webman/3rdparty/gopeed/app/api/...` → 404，
+绝对的那种会打到 DSM 根 → 404。所以在 `flutter_bootstrap.js` 之前注入一段：
+
+```javascript
+var API_ORIGIN = location.protocol + "//" + location.hostname + ":38099";
+function rewrite(u) {
+  if (typeof u !== "string" || u.indexOf("api/") < 0) return u;
+  var m = u.match(/^(?:https?:\/\/[^\/]*)?\/?(api\/.*)$/);
+  return m ? API_ORIGIN + "/" + m[1] : u;
+}
+// patch XMLHttpRequest.prototype.open / window.fetch / EventSource
+```
+
+**3）隧道注入 CORS**
+
+跨域请求带 `Authorization` / `Content-Type` 会触发预检，引擎本身不懂 CORS，
+所以由隧道负责：`OPTIONS` 直接回 204 + `Access-Control-Allow-*`，普通响应在
+状态行后插入同样的头（回显 `Origin`，并带 `Allow-Credentials: true`）。
+
+> 隧道因此**无条件启用**：即使没有证书（只跑 HTTP）也要开，否则 CORS 头没人加。
+
+**4）关闭 Flutter 的 service worker**
+
+`flutter_bootstrap.js` 末尾的 `_flutter.loader.load({ serviceWorkerSettings: ... })`
+改成 `_flutter.loader.load({})`。否则子目录下注册的 SW 会把旧版本缓存住，
+更新套件后仍然看到旧页面。
+
+## 三之五、HTTP 与 HTTPS 同端口
 
 ```
 浏览器 ──► :38099 (gopeed-tunnel.py) ──► 127.0.0.1:38100 (gopeed)
                  │ 首字节 0x16 ? TLS : 明文
 ```
 
-- 有证书 → 同时支持 http 和 https；没有证书 → 降级为纯 HTTP（引擎直接绑 38099）
-- 隧道进程和引擎都以套件用户运行，隧道双栈监听 `0.0.0.0` + `[::]`
+- 有证书 → http 和 https 都可用；没有证书 → 只跑 http（CORS 照常注入）
+- 隧道双栈监听 `0.0.0.0` + `[::]`
 
 **证书是硬限制**：DSM 的默认证书在 `/usr/syno/etc/certificate/system/default/`，
-`privkey.pem` 权限是 `600 root:root`。DSM 7 的 `postinst` 以 **package 用户** 运行
-（实测 `sudo -l -U gopeed` → not allowed），所以套件自己复制不了证书，必须在安装后
-由管理员手动复制一次：
+`privkey.pem` 是 `600 root:root`，而 DSM 7 的 `postinst` 以 package 用户运行
+（实测 `sudo -l -U gopeed` → not allowed），套件自己复制不了，需要管理员手动一次：
 
 ```bash
 sudo cp /usr/syno/etc/certificate/system/default/fullchain.pem /volume1/@appdata/gopeed/tls/cert.pem
@@ -170,38 +294,9 @@ sudo chown -R gopeed /volume1/@appdata/gopeed/tls
 sudo synopkg restart gopeed
 ```
 
-另外一个前提：**自签证书在 iframe 里没有用**。浏览器对 iframe 内的证书错误不会弹
-"继续访问"，直接阻断。所以 https 场景必须配受信任的证书（Let's Encrypt 等）。
-
-## 三之四、为什么不能把 Gopeed 嵌进 DSM 窗口（CSP）
-
-DSM 的所有页面都带这个响应头：
-
-```
-Content-Security-Policy: ... frame-src 'self' data: blob: https://*.synology.com ...
-```
-
-`frame-src 'self'` 的 `self` 包含 scheme + host + **port**，所以
-`http://nas:38099` 与 DSM 的 `http://nas:5000` 不同源 —— 浏览器会**直接阻止**
-这个 iframe，控制台报 "Refused to frame ... because it violates the following
-Content Security Policy directive: frame-src 'self'"。表现就是窗口一片空白，
-与 iframe 高度、协议、证书都无关。
-
-尝试过的路和结论：
-
-| 方案 | 结果 |
-|---|---|
-| iframe 指向 `http://nas:38099` | ❌ CSP 拦截 |
-| iframe 指向 `https://nas:38099` | ❌ 同样跨端口，CSP 拦截 |
-| 把 Gopeed 挂到 `/webman/3rdparty/gopeed/app/` 反代 | ❌ 前端与 REST 用绝对路径 `/api/...`，全部 404 |
-| 改 CSP 放行该端口 | ❌ 头来自 DSM 主程序，nginx 配置和 webman 目录里都搜不到，改不了也不该改 |
-
-最终方案：窗口里渲染一张启动卡片（`ui/Gopeed.js`），点按钮用
-`window.open(url, "gopeed_app", "width=1280,height=860,menubar=no,...")`
-打开一个没有地址栏/工具栏的独立窗口，观感接近应用窗口而不是浏览器标签页。
-
-> 这也解释了为什么最早的版本（把 iframe 塞进 `html`）看起来像"高度 0"——
-> 其实两个问题都有，但 CSP 才是致命的那个。
+**群晖自签证书在 iframe 里无效**：浏览器对 iframe 内的证书错误不弹"继续访问"，
+直接阻断。所以 https 桌面必须配受信任证书（Let's Encrypt 等）。
+只在内网用 `http://nas:5000` 打开 DSM 则没有这个限制。
 
 ## 四、启动参数
 
