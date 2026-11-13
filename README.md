@@ -48,8 +48,8 @@
 
 ### HTTPS
 
-桌面图标会按 DSM 页面的协议加载 iframe：http 打开的 DSM 用 `http://host:38099`，
-https 打开的 DSM 用 `https://host:38099`（同一个端口，隧道自动分流）。
+启动卡片会按 DSM 页面的协议打开 Gopeed：http 的 DSM → `http://host:38099`，
+https 的 DSM → `https://host:38099`（同一个端口，隧道自动分流）。
 
 https 要真正可用，需要两件事：
 
@@ -128,12 +128,13 @@ python build.py --port 38123        # 换端口
    iframe 跟随 DSM 页面的协议即可，不需要反向代理。
    **但证书只能是 DSM 的默认证书**，而私钥是 `600 root`，套件以 package 用户运行读不到，
    所以需要手动复制一次（见「HTTPS」一节）；没有证书时自动降级为 HTTP。
-7. **DSM 桌面集成**：`dsmuidir="ui"` 让 `package.tgz` 里的 `ui/` 被软链到
-   `/usr/syno/synoman/webman/3rdparty/gopeed/`，`dsmappname` 指向 Ext 应用类。
-   DSM 7.2 起 `config` 里 `type: legacy|url` 不再决定打开方式，必须在 `ui/Gopeed.js`
-   里定义 `SYNO.SDS.Gopeed.Application` / `MainWindow`，由 `getMainHtml()` 返回 iframe，
-   才能在 DSM 窗口内打开。**用 https 打开 DSM 时 iframe 会被混合内容拦截**，
-   页面会给出提示（改用 http 访问 DSM，或配反向代理）。
+7. **DSM 桌面集成（窗口内无法嵌入，这是平台限制）**：`dsmuidir="ui"` 让
+   `package.tgz` 的 `ui/` 软链到 `/usr/syno/synoman/webman/3rdparty/gopeed/`，
+   `dsmappname` 指向 Ext 应用类，主菜单因此出现图标。
+   **但 DSM 的响应头带 `Content-Security-Policy: ... frame-src 'self' ...`**，
+   只允许同源 iframe —— 指向 `http://nas:38099` 的 iframe 会被浏览器直接拦掉（整个窗口空白）。
+   Gopeed 也不能挂到 DSM 的子路径下（前端和 REST 都用绝对 `/` 路径）。
+   所以桌面窗口里显示的是一张启动卡片，点「打开 Gopeed」在一个无地址栏的独立窗口打开。
 8. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
    都报「套件文件格式不正确」。只有里面的 `package.tgz` 才压缩。这条最容易踩，
    详见 [docs/dsm-port.md](docs/dsm-port.md) 第三节。
@@ -141,8 +142,9 @@ python build.py --port 38123        # 换端口
 ## 已知限制
 
 - **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
-- **https 需要受信任证书**：自签证书在 iframe 里无法加载，桌面会显示说明页；
-  用 `http://<nas>:5000` 打开 DSM 则没有这个限制。
+- **桌面窗口内无法嵌入 Gopeed**：DSM 的 CSP `frame-src 'self'` 禁止跨端口 iframe，
+   这是 DSM 自身的安全策略，套件无法绕过。窗口里是启动卡片，点按后弹出独立窗口。
+- **https 需要受信任证书**：自签证书会触发浏览器警告，需要手动确认一次。
 - **证书续期后要重新复制**：Let's Encrypt 续期会替换私钥，续期后重跑上面那三条
   `cp`/`chown` 命令（或重装套件）才会生效。
 - **极少数情况下首次建任务会崩**：上游 1.9.3 在 `Fetcher.Resolve` 出现过一次

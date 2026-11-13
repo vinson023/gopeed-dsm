@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-15"
-CHANGELOG = "1.9.3-15 HTTP+HTTPS on one port, fixed iframe height"
+PKG_VERSION = "1.9.3-16"
+CHANGELOG = "1.9.3-16 launcher window (DSM CSP blocks cross-port iframe)"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

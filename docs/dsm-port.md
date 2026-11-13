@@ -173,20 +173,35 @@ sudo synopkg restart gopeed
 另外一个前提：**自签证书在 iframe 里没有用**。浏览器对 iframe 内的证书错误不会弹
 "继续访问"，直接阻断。所以 https 场景必须配受信任的证书（Let's Encrypt 等）。
 
-## 三之四、iframe 高度为 0 的坑
+## 三之四、为什么不能把 Gopeed 嵌进 DSM 窗口（CSP）
 
-第一版把 iframe 作为字符串塞进 `html:` 配置，DSM 窗口里一片空白 ——
-Ext 容器的 html 子节点不会自动撑满，iframe 的 `height:100%` 失去参照，算出 0 高度。
+DSM 的所有页面都带这个响应头：
 
-正确做法是把 iframe 做成真正的 Ext 元素，让 `layout: "fit"` 给它分配尺寸：
-
-```javascript
-{
-    xtype: "component",
-    autoEl: { tag: "iframe", src: url, frameborder: "0",
-              style: "width:100%;height:100%;border:0" }
-}
 ```
+Content-Security-Policy: ... frame-src 'self' data: blob: https://*.synology.com ...
+```
+
+`frame-src 'self'` 的 `self` 包含 scheme + host + **port**，所以
+`http://nas:38099` 与 DSM 的 `http://nas:5000` 不同源 —— 浏览器会**直接阻止**
+这个 iframe，控制台报 "Refused to frame ... because it violates the following
+Content Security Policy directive: frame-src 'self'"。表现就是窗口一片空白，
+与 iframe 高度、协议、证书都无关。
+
+尝试过的路和结论：
+
+| 方案 | 结果 |
+|---|---|
+| iframe 指向 `http://nas:38099` | ❌ CSP 拦截 |
+| iframe 指向 `https://nas:38099` | ❌ 同样跨端口，CSP 拦截 |
+| 把 Gopeed 挂到 `/webman/3rdparty/gopeed/app/` 反代 | ❌ 前端与 REST 用绝对路径 `/api/...`，全部 404 |
+| 改 CSP 放行该端口 | ❌ 头来自 DSM 主程序，nginx 配置和 webman 目录里都搜不到，改不了也不该改 |
+
+最终方案：窗口里渲染一张启动卡片（`ui/Gopeed.js`），点按钮用
+`window.open(url, "gopeed_app", "width=1280,height=860,menubar=no,...")`
+打开一个没有地址栏/工具栏的独立窗口，观感接近应用窗口而不是浏览器标签页。
+
+> 这也解释了为什么最早的版本（把 iframe 塞进 `html`）看起来像"高度 0"——
+> 其实两个问题都有，但 CSP 才是致命的那个。
 
 ## 四、启动参数
 
