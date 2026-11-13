@@ -34,8 +34,10 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-27"
-CHANGELOG = "1.9.3-27 an empty wizard password now falls back to the default instead of disabling login; hint points at Shared Folder permissions"
+PKG_VERSION = "1.9.3-28"
+CHANGELOG = ("1.9.3-28 empty wizard password now really disables the login; BT/ED2K ports "
+             "and the download dir are pushed into the engine on every start; Korean, "
+             "Persian/Arabic and Tamil UI text is no longer rendered as boxes")
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

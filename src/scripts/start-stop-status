@@ -15,6 +15,7 @@ ETC="${SYNOPKG_PKGETC:-/var/packages/${PKG}/etc}"
 
 BIN="${DEST}/bin/gopeed"
 TUNNEL_PY="${DEST}/bin/gopeed-tunnel.py"
+SYNC_PY="${DEST}/bin/gopeed-sync.py"
 CONF="${ETC}/gopeed.conf"
 LOG="${VAR}/gopeed.log"
 PID_FILE="${VAR}/gopeed.pid"
@@ -87,43 +88,29 @@ tunnel_available() {
     return 0
 }
 
-# The engine only applies `downloadConfig` from -c when its storage is created,
-# so a re-install with an existing @appdata keeps the old directory. Nudge it
-# through the REST API once the engine is up (best effort).
-sync_download_dir() {
-    [ -n "$DOWNLOAD_DIR" ] || return 0
-    [ -n "$WEB_PASS" ] || return 0
-    command -v curl >/dev/null 2>&1 || return 0
-    case "$WEB_PASS" in
-        *'"'*|*'\'*) return 0 ;;
-    esac
+# Gopeed only applies `downloadConfig` from -c when its storage is created, so a
+# re-install (or an upgrade) with an existing var/ keeps the old directory and
+# the old protocol ports - the wizard values are silently ignored and the
+# settings page shows 0 for BT/ED2K, i.e. random, unreachable ports. Push the
+# wanted values through the REST API once the engine is up. The script is
+# idempotent, so a no-op start costs one GET.
+sync_settings() {
+    local port="$1"
+    [ -f "$SYNC_PY" ] || { log "no ${SYNC_PY}; download dir and ports not synced"; return 0; }
+    local py
+    py="$(find_python)" || { log "no python3; download dir and ports not synced"; return 0; }
 
-    local base="http://127.0.0.1:${INTERNAL_PORT}"
-    local token raw data body
-    token="$(curl -s --max-time 5 -X POST -H 'Content-Type: application/json' \
-        -d "{\"username\":\"${WEB_USER}\",\"password\":\"${WEB_PASS}\"}" \
-        "${base}/api/web/login" 2>/dev/null | sed -n 's/.*"data":"\([^"]*\)".*/\1/p')"
-    [ -n "$token" ] || return 0
-
-    raw="$(curl -s --max-time 5 -H "Authorization: Bearer ${token}" \
-        "${base}/api/v1/config" 2>/dev/null)"
-    [ -n "$raw" ] || return 0
-
-    # PUT expects the config object itself, not the {code,msg,data} envelope.
-    data="$(printf '%s' "$raw" | sed -n 's/.*"data":\({.*}\)}[^}]*$/\1/p')"
-    case "$data" in
-        *'"downloadDir"'*) ;;
-        *) return 0 ;;
-    esac
-    case "$data" in
-        *"\"downloadDir\":\"${DOWNLOAD_DIR}\""*) return 0 ;;
-    esac
-
-    body="$(printf '%s' "$data" | sed "s#\"downloadDir\":\"[^\"]*\"#\"downloadDir\":\"${DOWNLOAD_DIR}\"#")"
-    curl -s --max-time 8 -X PUT -H "Authorization: Bearer ${token}" \
-        -H 'Content-Type: application/json' -d "$body" \
-        "${base}/api/v1/config" >/dev/null 2>&1
-    log "download dir synced to ${DOWNLOAD_DIR}"
+    set -- --port "$port" --dir "$DOWNLOAD_DIR" \
+           --bt-port "$BT_PORT" --ed2k-tcp "$ED2K_PORT" --ed2k-udp "$ED2K_UDP_PORT"
+    if [ -n "$WEB_PASS" ]; then
+        set -- "$@" --user "$WEB_USER" --pass "$WEB_PASS"
+    fi
+    if "$py" "$SYNC_PY" "$@" >> "$LOG" 2>&1; then
+        log "settings synced: dir=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
+    else
+        log "settings sync failed (exit $?); engine keeps its stored config"
+    fi
+    return 0
 }
 
 start_tunnel() {
@@ -252,7 +239,7 @@ JSON
         fi
     fi
 
-    sync_download_dir
+    sync_settings "$port"
     log "started engine=$(cat "$PID_FILE" 2>/dev/null) tunnel=$(cat "$TUNNEL_PID" 2>/dev/null || echo none)"
     return 0
 }

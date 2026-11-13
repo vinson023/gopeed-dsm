@@ -490,6 +490,105 @@ sudo /usr/syno/bin/synoacltool -get /volume1/downloads     # 确认
 > （实测把可写目录判成只读）。运行时检查放在 `start-stop-status`，那里本身
 > 就以套件用户身份运行。
 
+## 三之七、1.9.3-28 修的三个问题
+
+### 1. 向导里的 BT / ED2K 端口装完全变 0
+
+现象：设置页「BT 监听端口」「ED2K TCP/UDP」都是 `0`（`0` = 让内核随机分配，
+路由器无法映射、BT 拿不到外网 peer、eMule 只能 LowID），而同一份
+`gopeed.conf` 里明明写着 51413 / 4662 / 4672。
+
+原因：`-c config.json` 里的 `downloadConfig` 只在引擎**第一次**初始化存储时被
+`cmd/server.go` 合并进配置（`Downloader.IsFirstLoad()`）：
+
+```go
+if rest.Downloader.IsFirstLoad() {
+    if cfg.DownloadConfig != nil {
+        cfg.DownloadConfig.Merge(downloadCfg)
+        rest.Downloader.PutConfig(cfg.DownloadConfig)
+    }
+}
+```
+
+`@appdata` 在升级/重装后保留，存储里已经有 config 桶，`IsFirstLoad()` 就是
+false，向导值被**静默丢弃**；设置页于是显示引擎自己的默认值 `0`。
+
+修法：不再指望 seed 文件，改成每次启动后走 REST 把值推回去。新增
+`bin/gopeed-sync.py`（引擎是唯一可信来源，脚本只读-改-写）：
+
+```bash
+# start-stop-status
+sync_settings "$port"      # port = 引擎实际监听的端口（隧道后是 38099+1）
+```
+
+脚本先 `GET /api/v1/config`，只在值不一致时才 `PUT`，所以重复启动没有任何写操作；
+日志里能看到 `config already points at /volume1/downloads` 或
+`settings synced: dir=... bt=... ed2k=...`。
+
+> 顺带一个坑：`PUT /api/v1/config` 的 body 必须是响应里的 `data` 对象，
+> 不能是整个 `{code,msg,data}` 信封，否则配置会被写成零值。
+
+### 2. 允许把密码留空（= 关闭登录）
+
+`postinst` 原来写的是 `${wizard_web_pass:-gopeed}`：`:-` 在变量为空时也会回落
+到默认值，于是「留空」被强行改成 `gopeed`。要用 `-`：
+
+```bash
+WEB_PASS="${wizard_web_pass-}"        # 空就是空
+```
+
+空密码时 `start-stop-status` 不传 `-u/-p`，引擎按上游约定关闭 Web 鉴权：
+
+```bash
+if [ -n "$WEB_PASS" ]; then
+    nohup "$BIN" ... -u "$WEB_USER" -p "$WEB_PASS" >> "$LOG" 2>&1 &
+else
+    nohup "$BIN" ... >> "$LOG" 2>&1 &
+fi
+```
+
+`gopeed-sync.py` 也要能不带 token 工作（`if args.password:` 才登录），否则
+空密码场景下端口同步会被直接跳过。
+
+### 3. 语言列表里部分语言显示成方块
+
+Flutter Web 的字体回退是**运行时**从 `fonts.gstatic.com` 下载 Noto 字体分片，
+基址硬编码在 `main.dart.js` 里：
+
+```
+ga8x(){... s=s==null?null:s.fontFallbackBaseUrl; return s==null?"assets/gstatic/":s}
+```
+
+NAS 不通外网时请求 404，缺字形就渲染成豆腐块。中文之前镜像了
+`assets/gstatic/notosanssc/v37/`（101 个分片），但语言选择器里的
+**한국어 / فارسی / தமிழ்** 分别需要 `notosanskr`、`notosansarabic`、
+`notosanstamil` —— 于是只有这三个显示成方块。
+
+分片路径不要手抄，直接从 `main.dart.js` 的 `A.f("字体名 序号","路径")` 表里解析
+（仓库里 `tools/fetch_fallback_fonts.py` 就是干这个的，`--list` 可以只看清单）：
+
+```
+python tools/fetch_fallback_fonts.py src/package/ui/web            # 只补需要的家族
+python tools/fetch_fallback_fonts.py src/package/ui/web --all      # 全部 144 个家族
+```
+
+```python
+pat = re.compile(r'A\.f\("([^"]+)","([^"]+)"\)')
+# "Noto Sans KR 12" -> 家族 "Noto Sans KR"，路径 notosanskr/v36/<hash>.12.woff2
+# 下载到 ui/web/assets/gstatic/<路径>；三个家族共 126 个文件 / 1.9 MB
+```
+
+覆盖范围可以用 fontTools 校验（把 `assets/gstatic` 下所有 woff2 的 cmap 并起来，
+和 `main.dart.js` 里各语言的文案 + 语言名做差集）：
+
+```
+language names found: 31
+all language names fully covered
+```
+
+另外给所有字体 URL 加了 `?v=__VERSION__`（`build.py` 注入版本号）：浏览器对
+404 也可能做启发式缓存，加版本戳能保证升级后一定重新拉取。
+
 ## 四、启动参数
 
 ```
@@ -540,7 +639,9 @@ data="$(printf '%s' "$raw" | sed -n 's/.*"data":\({.*}\)}[^}]*$/\1/p')"
 body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"'"#')"
 ```
 
-这也是为什么 `sync_download_dir()` 在 PUT 前要校验 `data` 里确实含 `"downloadDir"`。
+> **1.9.3-28 之后**：这一步已经搬到 `bin/gopeed-sync.py`（顺手把 BT / ED2K 端口
+> 一起同步，见「三之七」）。`start-stop-status` 里的 `sync_settings()`
+> 只负责把 conf 里的值作为参数传给它，不再用 sed 拼 JSON。
 
 ## 六、实测记录
 
@@ -562,6 +663,11 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 | 12 | 同源 CGI 代理 | ✅ `/webman/3rdparty/gopeed/api.cgi/api/v1/info` 401（未授权）、登录 200 + token、带 token 取 config 200、创建任务 200 且文件落盘属主 `gopeed` |
 | 13 | **https 下的 CGI** | ✅ `https://127.0.0.1:5001/webman/3rdparty/gopeed/...`：index 200、canvaskit.wasm 200、api 401（正常未授权） |
 | 14 | CGI 运行身份 | ✅ DSM 以 root 执行，脚本 `setgid/setuid` 到 `gopeed`（实测 euid 0 → 154548） |
+| 15 | **1.9.3-28 覆盖升级** | ✅ `synopkg install` 走 upgrade 流程，`gopeed.conf` 原样保留（密码、目录、端口不变） |
+| 16 | 端口同步 | ✅ `GET /api/v1/config` 由 `0/0/0` 变为 `51413 / 4662 / 4672`，重启后保持；配置一致时日志为 `config already points at ...`（无写入） |
+| 17 | 空密码 | ✅ `WEB_PASS=""` 时进程无 `-u/-p`，`GET /api/v1/config` 免 token 返回 200；端口同步在无鉴权下同样生效 |
+| 18 | 空密码回填 | ✅ 用 `wizard_web_pass=` 跑 `postinst`，生成的 conf 里是 `WEB_PASS=""`（不再回落 `gopeed`） |
+| 19 | 离线字体 | ✅ 228 个 woff2 分片经 DSM nginx 全部 200（`/webman/3rdparty/gopeed/web/assets/gstatic/...`），含 `?v=1.9.3-28` 版本戳 |
 
 ### 已知问题
 
@@ -587,12 +693,12 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 python build.py
 
 # 结构
-tar tzf build/gopeed-1.9.3-13-x86_64.spk
+tar tzf build/gopeed-1.9.3-28-x86_64.spk
 
 # checksum 是否与 INFO 一致
 python - <<'PY'
 import hashlib, tarfile
-with tarfile.open("build/gopeed-1.9.3-13-x86_64.spk") as t:
+with tarfile.open("build/gopeed-1.9.3-28-x86_64.spk") as t:
     info = t.extractfile("INFO").read().decode()
     tgz = t.extractfile("package.tgz").read()
 print("match:", hashlib.md5(tgz).hexdigest() in info)

@@ -33,7 +33,10 @@ if [ -f "$CONF" ]; then
         >> "$VAR/install.log" 2>/dev/null
 else
     WEB_USER="${wizard_web_user:-admin}"
-    WEB_PASS="${wizard_web_pass:-gopeed}"   # empty wizard value must NOT disable auth
+    # A blank wizard password is a valid choice: Gopeed disables web
+    # authentication when no password is set, so the UI opens straight into the
+    # task list. (${var-def}, not ${var:-def}: an empty value must survive.)
+    WEB_PASS="${wizard_web_pass-}"
     DOWNLOAD_DIR="${wizard_download_dir:-}"
     BT_PORT="${wizard_bt_port:-51413}"
     ED2K_PORT="${wizard_ed2k_port:-4662}"

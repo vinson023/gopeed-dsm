@@ -107,7 +107,9 @@ python build.py --port 38123        # 换端口
 │   ├── WIZARD_UIFILES/         install_uifile / uninstall_uifile
 │   └── package/                打包进 package.tgz 的内容
 │       ├── bin/gopeed          上游二进制
-│       └── ui/                 DSM 桌面集成（config / Gopeed.js / images）
+│       ├── bin/gopeed-sync.py  把向导的目录/端口推给运行中的引擎
+│       └── ui/                 DSM 桌面集成（config / Gopeed.js / web / images）
+├── tools/fetch_fallback_fonts.py  从 gstatic 镜像离线 Noto 字体分片
 └── docs/dsm-port.md            移植说明与实测记录
 ```
 
@@ -118,9 +120,11 @@ python build.py --port 38123        # 换端口
 2. **下载目录靠 `config.json` 首启播种**：引擎在 `-c` 指定的文件里读 `downloadConfig`
    作为初始配置，但只在存储为空时生效；之后每次启动必须**删掉**该文件，否则它会把
    用户后来改的配置（包括 `maxRunning`）覆盖成零值。
-3. **改过的下载目录靠 REST 补同步**：`@appdata` 在卸载后保留，重装时存储已存在，
-   首启播种不会再生效。启动后用 `curl` 调 `GET/PUT /api/v1/config` 把向导里的目录写进去
-   （只改 `downloadDir`，其余字段保持原样）。
+3. **向导里的下载目录 / BT / ED2K 端口靠 REST 同步**：`downloadConfig` 只在引擎首次
+   初始化存储时生效，之后（含升级）一律被忽略 —— 于是设置页里 BT 和 ED2K 都显示 `0`
+   （= 随机端口，路由器无法映射）。所以每次启动后都由 `bin/gopeed-sync.py` 登录、
+   `GET /api/v1/config`、按需改 `downloadDir` / `protocolConfig.bt.listenPort` /
+   `ed2k.listenPort` / `ed2k.udpPort` 再 `PUT` 回去；已一致时不做任何写操作。
 4. **IPv6 双栈**：Gopeed 用 `"%s:%d"` 拼地址，所以传 `[::]`（带方括号）而不是 `::`，
    在 `bindv6only=0` 的内核上是双栈监听；否则退回 `0.0.0.0`。
 5. **端口占用提前拦截**：`preinst` 里检查 38099，占用则中止安装（装完再改端口只能重装）。
@@ -147,7 +151,8 @@ python build.py --port 38123        # 换端口
 
 - **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
 - **前端资源随包分发**：因为必须同源，`ui/web/` 里带了一份完整的 Flutter web 构建
-  （约 12 MB），套件体积因此从 38 MB 涨到 42 MB。
+  和离线 Noto 字体（约 6 MB，含中文 / 韩文 / 阿拉伯 / 泰米尔分片），套件体积因此从
+  38 MB 涨到 48 MB。
 - **API 走 CGI 转发**：每个请求会 fork 一个 `api.cgi` 进程（Python 约 25 ms）。
   Gopeed 前端是定时轮询，实测无感；如果将来做高频实时推送需要另想办法。
 - **https 需要受信任证书**：自签证书会触发浏览器警告，需要手动确认一次。
@@ -158,8 +163,11 @@ python build.py --port 38123        # 换端口
 - **ARM 包未在真机运行**：仅通过架构字段与静态校验。
 - **套件用户与共享文件夹**：默认只能写 `gopeed` 共享文件夹；其他目录需要在
   「控制面板 → 共享文件夹 → 选中目标文件夹 → 编辑 → 权限 → 用户或组选「系统内部用户」→ 勾选 `gopeed` 的读写」里授权。
-- **重装会重写配置**：安装向导的值会覆盖 `@appconf/gopeed/gopeed.conf`（保留任务数据，
-  但账号密码/下载目录以本次向导为准）。
+- **登录密码留空 = 关闭鉴权**：Gopeed 在无密码时不启用 Web 登录，页面直接进任务列表。
+  DSM 侧没有改密码的入口，想恢复登录只能用向导重新装一次（或手工改
+  `@appconf/gopeed/gopeed.conf` 里的 `WEB_PASS` 后重启套件）。
+- **覆盖升级不重置配置**：`postinst` 只在 `gopeed.conf` 不存在时生成它，升级会保留
+  账号密码与向导里填过的目录/端口。
 
 ## 许可
 
