@@ -68,6 +68,20 @@ sudo synopkg restart gopeed
 
 没有证书时隧道自动降级为纯 HTTP，不影响局域网使用。
 
+### 改账号 / 密码 / 下载目录 / 端口
+
+**升级和「保留配置」的重装都不会动已有设置**（这是故意的：向导里显示的是默认值，
+不是你现在用的值，直接套用会把目录和端口重置掉）。要改的话二选一：
+
+1. 套件中心里对这个套件再装一次同一个 `.spk`，**最后一页勾选「覆盖已有配置」**，
+   然后把新值填好（想关掉登录就把密码留空）；
+2. 或者直接改 conf 再重启：
+
+```bash
+sudo sed -i 's/^WEB_PASS=.*/WEB_PASS=""/' /var/packages/gopeed/etc/gopeed.conf   # 留空 = 不要密码
+sudo synopkg restart gopeed
+```
+
 ## 浏览器扩展
 
 装 [Gopeed 浏览器扩展](https://chromewebstore.google.com/detail/gopeed/mijpgljlfcapndmchhjffkpckknofcnd)后，

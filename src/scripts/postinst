@@ -24,12 +24,29 @@ new_token() {
     head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n'
 }
 
+# Re-running the wizard normally must NOT overwrite stored settings: a
+# command-line upgrade passes no wizard variables at all, and the form shows
+# defaults (not the live values), so applying it would reset account, ports and
+# download dir -- the "settings disappeared after upgrade" bug. The wizard has
+# an opt-in checkbox for the case where the user really does want to re-apply
+# it (e.g. clearing the password).
+RESET=0
+case "${wizard_reset_config:-false}" in
+    true|TRUE|True|yes|YES|1|on) RESET=1 ;;
+esac
+
 if [ -f "$CONF" ]; then
-    # Upgrade / reinstall with "keep data": never touch what the user set.
-    # (Wizard variables are empty on a command-line upgrade, so re-writing the
-    # file here would silently reset account, ports and download directory.)
     # shellcheck disable=SC1090
     . "$CONF"
+    OLD_TOKEN="${API_TOKEN-}"
+    OLD_BIND="${ENGINE_BIND:-127.0.0.1}"
+else
+    OLD_TOKEN=""
+    OLD_BIND=""
+fi
+
+if [ -f "$CONF" ] && [ "$RESET" = "0" ]; then
+    # keep what the user set, only backfill keys a newer build introduced
     WEB_USER="${WEB_USER:-admin}"
     WEB_PASS="${WEB_PASS-}"
     DOWNLOAD_DIR="${DOWNLOAD_DIR:-$DEFAULT_DL}"
@@ -50,20 +67,23 @@ if [ -f "$CONF" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') existing ${CONF} kept (upgrade)" \
         >> "$VAR/install.log" 2>/dev/null
 else
-    WEB_USER="${wizard_web_user:-admin}"
-    # A blank wizard password is a valid choice: Gopeed disables web
-    # authentication when no password is set, so the UI opens straight into the
-    # task list. (${var-def}, not ${var:-def}: an empty value must survive.)
-    WEB_PASS="${wizard_web_pass-}"
-    DOWNLOAD_DIR="${wizard_download_dir:-}"
-    BT_PORT="${wizard_bt_port:-51413}"
-    ED2K_PORT="${wizard_ed2k_port:-4662}"
-    ED2K_UDP_PORT="${wizard_ed2k_udp_port:-4672}"
+    # fresh install, or the user ticked "re-apply the wizard values"
+    WEB_USER="${wizard_web_user:-${WEB_USER:-admin}}"
+    # A blank password is a valid choice: Gopeed disables web authentication
+    # when no password is set, so the UI opens straight into the task list.
+    # (${var-def}, not ${var:-def}: an empty value must survive.) An unset
+    # variable means "wizard not involved", so keep whatever conf had.
+    WEB_PASS="${wizard_web_pass-${WEB_PASS-}}"
+    DOWNLOAD_DIR="${wizard_download_dir:-${DOWNLOAD_DIR:-}}"
+    BT_PORT="${wizard_bt_port:-${BT_PORT:-51413}}"
+    ED2K_PORT="${wizard_ed2k_port:-${ED2K_PORT:-4662}}"
+    ED2K_UDP_PORT="${wizard_ed2k_udp_port:-${ED2K_UDP_PORT:-4672}}"
     AUTO_START="true"
-    API_TOKEN="$(new_token)"
+    # keep the token/bind across a reset so paired extensions keep working
+    API_TOKEN="${OLD_TOKEN:-$(new_token)}"
     # loopback by default: the dual-stack front for the engine is the tunnel on
     # __PORT__. Set "[::]" here to expose the engine itself on every interface.
-    ENGINE_BIND="127.0.0.1"
+    ENGINE_BIND="${OLD_BIND:-127.0.0.1}"
 
     [ -n "$DOWNLOAD_DIR" ] || DOWNLOAD_DIR="$DEFAULT_DL"
 

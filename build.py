@@ -34,10 +34,10 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-29"
-CHANGELOG = ("1.9.3-29 browser extension support: an X-Api-Token is generated at install and "
-             "logged, so the extension can talk to http://<nas>:38099; the tunnel now prefers a "
-             "single dual-stack [::] listener and logs which families are bound")
+PKG_VERSION = "1.9.3-30"
+CHANGELOG = ("1.9.3-30 the wizard has an opt-in \"overwrite existing config\" checkbox: re-running it "
+             "can now apply a changed or blank password, while a plain upgrade still keeps the "
+             "stored settings")
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

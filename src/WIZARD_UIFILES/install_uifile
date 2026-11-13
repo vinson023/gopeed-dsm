@@ -112,5 +112,21 @@
         ]
       }
     ]
+  },
+  {
+    "step_title": "重新安装 / 升级",
+    "items": [
+      {
+        "type": "checkbox",
+        "desc": "覆盖已有配置",
+        "subitems": [
+          {
+            "key": "wizard_reset_config",
+            "desc": "勾选后，用本页的账号、密码、下载目录和端口覆盖现有设置；不勾选则全部保留（任务与已下载文件不受影响）。想清空密码就勾上这一项并把密码留空。",
+            "defaultValue": false
+          }
+        ]
+      }
+    ]
   }
 ]
