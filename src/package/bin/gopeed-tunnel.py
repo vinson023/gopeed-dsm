@@ -15,11 +15,15 @@ Two jobs:
 
 Gopeed's engine stays on loopback behind this tunnel.
 """
+import json
 import os
 import socket
 import ssl
 import sys
+import time
+import time
 import threading
+import urllib.parse
 
 CHUNK = 65536
 IDLE_TIMEOUT = 600
@@ -168,6 +172,16 @@ def proxy(conn, ctx, upstream):
         up = socket.create_connection(upstream, timeout=15)
         up.settimeout(IDLE_TIMEOUT)
 
+        # Deleting a task with "remove files" does not remove the in-flight
+        # "<name>.part" of a single-file task. Collect what it owns *before*
+        # the task disappears, clean up after a successful delete.
+        guard = {"ids": [], "targets": []}
+        if method.upper() == "DELETE":
+            try:
+                guard = delete_guard_targets(path, headers, upstream)
+            except Exception as exc:
+                log("delete guard: lookup failed (%s)" % exc)
+
         # rebuild the request: force Connection: close so every response is a
         # single, parseable unit; drop Expect so the upstream never sends 100.
         out = ["%s %s %s" % (method, path, version)]
@@ -202,6 +216,7 @@ def proxy(conn, ctx, upstream):
         threading.Thread(target=push_body, daemon=True).start()
 
         # read the response head (skip any 1xx informational responses)
+        resp_status = 0
         while True:
             resp_head, resp_rest = recv_head(up)
             if not resp_head:
@@ -209,21 +224,90 @@ def proxy(conn, ctx, upstream):
             first = resp_head.split(b"\r\n", 1)[0]
             if first.startswith(b"HTTP/1.1 1") or first.startswith(b"HTTP/1.0 1"):
                 continue
+            try:
+                resp_status = int(first.split(b" ")[1])
+            except Exception:
+                resp_status = 0
             break
 
         if origin:
             resp_head = inject_cors(resp_head, origin, req_headers)
 
-        conn.sendall(resp_head + b"\r\n\r\n")
-        if resp_rest:
-            conn.sendall(resp_rest)
+        if not guard["ids"]:
+            conn.sendall(resp_head + b"\r\n\r\n")
+            if resp_rest:
+                conn.sendall(resp_rest)
+            while True:
+                data = up.recv(CHUNK)
+                if not data:
+                    break
+                conn.sendall(data)
+            stop.set()
+            return
 
+        # A delete with files: buffer the (tiny) response so a panic that already
+        # dropped the task record can be reported as success instead of
+        # "runtime error: invalid memory address or nil pointer dereference".
+        body = [resp_rest]
         while True:
             data = up.recv(CHUNK)
             if not data:
                 break
-            conn.sendall(data)
+            body.append(data)
         stop.set()
+        payload = b"".join(body)
+
+        deleted = 200 <= resp_status < 300
+        if not deleted:
+            try:
+                deleted = not any(task_still_exists(upstream, tid, headers)
+                                  for tid in guard["ids"])
+            except Exception as exc:
+                log("delete guard: verify failed (%s)" % exc)
+                deleted = False
+
+        if deleted and not (200 <= resp_status < 300):
+            fix = b'{"code":0,"msg":"","data":null}'
+            head = ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    "Content-Length: %d\r\nConnection: close" % len(fix))
+            resp_head = head.encode("latin-1")
+            payload = fix
+            log("delete guard: engine reported an error but the task is gone - "
+                "answered 200")
+
+        if origin:
+            resp_head = inject_cors(resp_head, origin, req_headers)
+        conn.sendall(resp_head if resp_head.endswith(b"\r\n\r\n")
+                     else resp_head + b"\r\n\r\n")
+        conn.sendall(payload)
+
+        if guard["targets"]:
+            if deleted:
+                cleanup_partials(guard["targets"],
+                                 ",".join(i[:8] for i in guard["ids"]))
+            else:
+                threading.Thread(target=delayed_cleanup,
+                                 args=(upstream, guard, headers),
+                                 daemon=True).start()
+        return
+
+        # Clean up only when the delete really happened. A 2xx is the normal
+        # case; the engine also panics on some tasks ("invalid memory address")
+        # *after* removing the task record but *before* removing the files, so a
+        # non-2xx still counts as deleted when the task is gone - otherwise the
+        # files would be orphaned forever.
+        if guard["targets"]:
+            deleted = 200 <= resp_status < 300
+            if not deleted and guard["ids"]:
+                try:
+                    deleted = not any(task_still_exists(upstream, tid, headers)
+                                      for tid in guard["ids"])
+                except Exception as exc:
+                    log("delete guard: verify failed (%s)" % exc)
+                    deleted = False
+            if deleted:
+                cleanup_partials(guard["targets"],
+                                 ",".join(i[:8] for i in guard["ids"]))
     except Exception as exc:
         log("tunnel: conn error (%s)" % exc)
     finally:
@@ -234,6 +318,221 @@ def proxy(conn, ctx, upstream):
             except Exception:
                 pass
         _ = tls
+
+
+# ---------------------------------------------------------------- delete guard
+#
+# Gopeed writes in-flight data as "<name>.part" but its delete path (force=true)
+# only removes the *final* name for single-file tasks; multi-file tasks go
+# through RemoveAll and are fine. A partially downloaded torrent therefore keeps
+# its .part file after "delete + delete files" - on a NAS that is easily tens of
+# GB. The binary cannot be patched, so: before letting the delete through, ask
+# the engine what the task owns, then remove "<file>.part" once the delete
+# succeeded. Both routes are covered - DELETE /api/v1/tasks/<id> and the batch
+# form DELETE /api/v1/tasks?id=..&id=.. that the web UI actually uses.
+
+TASKS_PATH = "/api/v1/tasks"
+
+
+def _oneshot(upstream, raw, timeout=20):
+    s = socket.create_connection(upstream, timeout=timeout)
+    s.settimeout(timeout)
+    try:
+        s.sendall(raw)
+        out = []
+        while True:
+            try:
+                data = s.recv(CHUNK)
+            except socket.timeout:
+                break
+            if not data:
+                break
+            out.append(data)
+        return b"".join(out)
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _split_response(resp):
+    try:
+        head, _, body = resp.partition(b"\r\n\r\n")
+        lines = head.decode("iso-8859-1").split("\r\n")
+        status = int(lines[0].split(" ")[1])
+        hdrs = {}
+        for line in lines[1:]:
+            key, _, value = line.partition(":")
+            hdrs[key.strip().lower()] = value.strip()
+        if "chunked" in hdrs.get("transfer-encoding", "").lower():
+            buf, pos, dec = body, 0, []
+            while True:
+                eol = buf.index(b"\r\n", pos)
+                size = int(buf[pos:eol].split(b";")[0], 16)
+                if size == 0:
+                    break
+                dec.append(buf[eol + 2:eol + 2 + size])
+                pos = eol + 2 + size + 2
+            body = b"".join(dec)
+        else:
+            length = hdrs.get("content-length")
+            if length and length.isdigit():
+                body = body[:int(length)]
+        return status, body
+    except Exception:
+        return 0, b""
+
+
+def _fetch_task(upstream, task_id, headers):
+    lines = ["GET %s/%s HTTP/1.1" % (TASKS_PATH, task_id),
+             "Host: 127.0.0.1", "Connection: close"]
+    # `headers` is the parsed request header list, not a dict
+    for key in ("authorization", "cookie", "x-api-token"):
+        value = get_header(headers, key)
+        if value:
+            lines.append("%s: %s" % (key.title(), value))
+    raw = ("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1")
+    status, body = 0, b""
+    for attempt in range(2):
+        try:
+            status, body = _split_response(_oneshot(upstream, raw))
+        except Exception:
+            status, body = 0, b""
+        if status == 200:
+            break
+        if attempt == 0:
+            time.sleep(0.2)
+    if status != 200:
+        return None
+    try:
+        data = (json.loads(body.decode("utf-8", "replace")).get("data")) or None
+    except Exception:
+        return None
+    if isinstance(data, list):                 # be tolerant of API shape changes
+        for item in data:
+            if isinstance(item, dict) and item.get("id") == task_id:
+                return item
+        return data[0] if data and isinstance(data[0], dict) else None
+    return data
+
+
+def _partial_targets(task):
+    """Files the engine leaves behind for a single-file task (final + .part)."""
+    if isinstance(task, list):
+        task = task[0] if task and isinstance(task[0], dict) else {}
+    if not isinstance(task, dict):
+        return []
+    meta = task.get("meta") or task
+    if not isinstance(meta, dict):
+        return []
+    res = meta.get("res") or {}
+    opts = meta.get("opts") or {}
+    if res.get("name"):
+        return []                      # folder task: RemoveAll covers it
+    files = res.get("files") or []
+    base = (opts.get("path") or "").rstrip("/")
+    if not base or not os.path.isabs(base):
+        return []                      # "./" and friends: nothing safe to do
+    # A magnet that has not resolved its metadata yet has no Res.Files, but the
+    # task already carries the display name - use it, otherwise deleting in that
+    # window would leave the partial behind.
+    first = files[0] if files else {}
+    name = str(opts.get("name") or first.get("name") or task.get("name") or "").strip()
+    if not name or name in (".", "..") or "/" in name:
+        return []
+    sub = str(first.get("path") or "").strip("/")
+    if sub in ("", "."):
+        target = os.path.join(base, name)
+    else:
+        if ".." in sub.split("/"):
+            return []
+        target = os.path.join(base, sub, name)
+    try:
+        root = os.path.abspath(base)
+        real = os.path.abspath(target)
+        if os.path.commonpath([root, real]) != root or real == root:
+            return []
+    except Exception:
+        return []
+    return [real + ".part", real]
+
+
+def delete_guard_targets(path, headers, upstream):
+    """{"ids": [...], "targets": [...]} for a force=true DELETE, else empty."""
+    empty = {"ids": [], "targets": []}
+    if not path.startswith(TASKS_PATH):
+        return empty
+    raw_path, _, query = path.partition("?")
+    params = urllib.parse.parse_qs(query)
+    if (params.get("force") or ["false"])[0].lower() != "true":
+        return empty                   # "keep files" - leave everything alone
+
+    ids = []
+    rest = raw_path[len(TASKS_PATH):].strip("/")
+    if rest:
+        ids = [rest]
+    else:
+        for key in ("id", "ids"):
+            ids.extend(params.get(key) or [])
+    ids = [urllib.parse.unquote(i).strip() for i in ids if i][:50]
+    ids = [i for i in ids if i and "/" not in i and i not in (".", "..")]
+
+    targets = []
+    for tid in ids:
+        targets.extend(_partial_targets(_fetch_task(upstream, tid, headers)))
+    return {"ids": ids, "targets": targets}
+
+
+def task_still_exists(upstream, task_id, headers, retries=8, pause=0.5):
+    """Ask (a few times) whether the task record survived.
+
+    A panic in the engine happens *after* the record is dropped, so the GET that
+    follows the failed DELETE can still see the task for a moment. Retrying
+    avoids treating "just deleted, panic pending" as "delete failed".
+    """
+    for attempt in range(retries):
+        task = _fetch_task(upstream, task_id, headers)
+        if not task:
+            return False
+        if attempt + 1 < retries:
+            time.sleep(pause)
+    return True
+
+
+def delayed_cleanup(upstream, guard, headers, delay=3.0, tries=3):
+    """Second chance for deletes whose response looked like a failure.
+
+    The engine panics *after* dropping the task record, and right after such a
+    panic a follow-up GET may fail or still see the task. Instead of giving up we
+    re-check in the background and clean up as soon as the record is really gone.
+    """
+    for _ in range(tries):
+        time.sleep(delay)
+        try:
+            alive = [tid for tid in guard["ids"]
+                     if task_still_exists(upstream, tid, headers, retries=1)]
+        except Exception as exc:
+            log("delete guard: recheck failed (%s)" % exc)
+            continue
+        if not alive:
+            cleanup_partials(guard["targets"],
+                             ",".join(i[:8] for i in guard["ids"]))
+            return
+
+
+def cleanup_partials(targets, task_hint=""):
+    removed = []
+    for path in targets:
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.remove(path)
+                removed.append(path)
+        except Exception as exc:
+            log("delete guard: cannot remove %s (%s)" % (path, exc))
+    if removed:
+        log("delete guard%s: removed %s"
+            % (" (" + task_hint + ")" if task_hint else "", ", ".join(removed)))
 
 
 def _v4_socket(port):

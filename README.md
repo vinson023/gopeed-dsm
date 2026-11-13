@@ -107,6 +107,26 @@ sudo synopkg restart gopeed
 装完刷新一下页面（Ctrl+F5），设置页应显示你真正配置的目录与端口。
 之前用坏目录建的任务，删掉后重新添加就会落到正确位置。
 
+### 删除任务后文件还在（1.9.3-43 已修）
+
+删除对话框里那个「保留已下载的文件」**勾上 = 保留**，不勾才会连文件一起删。
+如果没勾却还是留着文件，那是 1.9.3-42 及更早的两个问题：
+
+- 引擎删单文件种子任务时只删最终文件名，未完成的数据是 `<name>.part`，于是一直留着；
+- 有的任务删除时引擎会 panic（界面弹 `invalid memory address`），而 panic 发生在
+  **删完任务记录之后、删文件之前** —— 任务没了，文件一个没删。
+
+1.9.3-43 起，删除请求会先记下这个任务的文件，再在删除后把 `<name>.part` 一并清掉
+（包括 panic 的情况）；此外每 10 分钟清扫一次无人认领的 `.part`（只清 `gopeed` 所有、
+且没有任何任务引用的），所以以前删掉任务留下的残留也会被收走。
+
+想立刻清一次：
+
+```bash
+sudo -u gopeed /usr/bin/python3 /var/packages/gopeed/target/bin/gopeed-sync.py \
+     --port 38100 --dir /你的下载目录 --sweep
+```
+
 ## 浏览器扩展
 
 装 [Gopeed 浏览器扩展](https://chromewebstore.google.com/detail/gopeed/mijpgljlfcapndmchhjffkpckknofcnd)后，

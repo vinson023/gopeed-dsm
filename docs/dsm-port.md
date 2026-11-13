@@ -936,6 +936,100 @@ n = o.a(p.i(r, "http"))     // protocolConfig.http 为 null 时直接抛
 | 界面新建 HTTP 任务 | 任务 `opts.path=/volume2/download`，文件 `/volume2/download/probe.bin`（5 MB，属主 `gopeed`） |
 | 旧任务（`path="./"`） | 删掉后按原 magnet 重建，路径改为 `/volume2/download`，正常续传 |
 
+## 三之十二、删除任务后文件还在（1.9.3-43）
+
+### 现象
+
+在界面上删掉任务（对话框里没有勾「保留已下载的文件」），任务没了，但
+`/volume2/download` 里的文件还在，尤其是未完成任务的 `<name>.part`。
+
+### 三个原因叠在一起
+
+**1. 对话框里那个勾选是"保留"**：勾上 = 保留文件（`force=false`），不勾 = 连文件一起删
+（`force=true`）。默认值来自 `config.extra.lastDeleteTaskKeep`，我们的配置里没有这个键，
+所以走前端默认（不勾 = 删文件）。
+
+**2. 引擎删单文件任务时只删最终文件名**（上游 `pkg/download/downloader.go`）：
+
+```go
+if force && task.Meta.Res != nil {
+    if task.Meta.Res.Name != "" {
+        os.RemoveAll(task.Meta.FolderPath())      // 多文件 / 目录任务：整目录清掉，没问题
+    } else {
+        util.SafeRemove(task.Meta.SingleFilepath())  // 单文件：只删 "<name>"
+    }
+}
+```
+
+而未完成的数据在磁盘上是 **`<name>.part`** —— 于是 `.part` 永远留下。一个 700 MB 的种子
+没下完就删掉，就直接占 700 MB，再没人会注意到。
+
+**3. 引擎删除时会 panic**：某些状态（例如任务已经 `error`，或同一磁力重复添加过）调用
+`DELETE` 会返回
+
+```
+{"code":1000,"msg":"runtime error: invalid memory address or nil pointer dereference"}
+```
+
+而这个 panic 发生在 `doDelete()` 里**删完记录之后、删文件之前**：
+
+```go
+storage.Delete(bucketTask, ...)   // ← 记录已经没了
+task.fetcher.Close()              // ← panic 在这里，后面整段被跳过
+if force && ... { RemoveAll / SafeRemove }   // ← 永远执行不到
+```
+
+结果就是：任务从列表消失（看起来"删掉了"），文件一个都没删。这正是"删了任务文件还在"。
+
+### 修法（隧道里做，二进制不动）
+
+`gopeed-tunnel.py` 加了一个 delete guard，**覆盖 UI 实际用的批量路由**
+`DELETE /api/v1/tasks?id=..&force=true`，也覆盖 `DELETE /api/v1/tasks/<id>`：
+
+1. 转发 DELETE 之前，先 `GET /api/v1/tasks/<id>` 记住这个任务拥有哪些文件
+   （单文件任务：`<path>/<name>`，多文件任务交给引擎的 RemoveAll，不掺和）
+2. 删掉之后（2xx）清理 `<name>.part` 和 `<name>`
+3. 响应不是 2xx 时，**再查一次任务是否还在**：记录已经消失就说明删成功了（panic 场景），
+   照样清理，并把响应**改写成 200**，界面上不再弹那句 Go panic
+4. 实在判断不出来的，起一个后台线程 3 秒后再确认一次
+
+一个细节：磁力还没解析出元数据时 `res.files` 是空的，这时用任务的 `name` 兜底，
+否则在那个窗口里删任务又会漏文件。
+
+### 兜底清扫
+
+panic、进程崩溃、以及 1.9.3-43 之前删掉的任务，隧道都追不到，所以 `gopeed-sync.py` 还会
+每 10 分钟扫一次下载目录里的孤儿 `.part`。安全边界（真机逐条验过）：
+
+| 规则 | 原因 |
+|---|---|
+| 只清 **`.part`** 结尾的文件 | 不碰正常文件 |
+| 只清**本套件用户（`gopeed`）所有**的 | 别的下载器（qBittorrent / Transmission / aria2）的 `.part` 不动 |
+| 只清**没有任何任务引用**的 | 正在下、暂停中的任务都在任务列表里，名字匹配就跳过 |
+| 只清**修改时间超过 3 分钟**的 | 避免刚好正在创建的文件 |
+
+也可以手动跑一次：
+
+```bash
+sudo -u gopeed /usr/bin/python3 /var/packages/gopeed/target/bin/gopeed-sync.py \
+     --port 38100 --dir /volume2/download --sweep
+```
+
+**删掉的那个任务如果正在下**，`.part` 会由 guard 立刻删除；如果是在 1.9.3-43 之前删的，
+清扫会在 10 分钟内收走。
+
+### 真机验证（192.168.5.140）
+
+| 用例 | 结果 |
+|---|---|
+| 单文件种子（有 `.part`）→ 删除（`force=true`） | `.part` 被删除，日志 `delete guard (<id>): removed ...` |
+| 同上但勾选「保留已下载的文件」（`force=false`） | 文件保留，guard 不介入 |
+| 删除时引擎 panic（返回 1000） | 任务消失，`.part` **仍被删除**（按"记录已消失"判定） |
+| 孤儿 `.part`（gopeed 所有，无任务引用） | 被清扫删除 |
+| 其他用户的 `.part`（属主 `vinson`） | 保留 |
+| 正在下载的任务的 `.part` | 保留 |
+| 1.36 GB 的旧孤儿 `.part`（1.9.3-43 之前删的任务） | 清扫一次即回收 |
+
 ## 四、启动参数
 
 ```
@@ -1051,6 +1145,10 @@ maxRunning 0、端口 0），新建任务的 `opts.path` 也变成 `"./"`。
 | 29 | 设置页读数（1.9.3-36） | ✅ Download Directory `/volume2/download`、Max Running `5`、BitTorrent Port `51413`、ED2K `4662/4672`；控制台不再有 `load downloader config fail` |
 | 30 | **界面新建任务落点** | ✅ 通过 UI 新建 HTTP 任务 → `opts.path=/volume2/download`，文件 `/volume2/download/probe.bin`（5 MB，属主 `gopeed`） |
 | 31 | 旧任务（`path="./"`）迁移 | ✅ `DELETE` 正常（无 nil pointer panic），按原 magnet 重建后 `path=/volume2/download` 并正常续传 |
+| 32 | 删除任务（1.9.3-43） | ✅ 单文件种子有 `.part` 时删除：`.part` 一并删除，日志 `delete guard (<id>): removed ...` |
+| 33 | 删除时保留文件 | ✅ 勾「保留已下载的文件」（`force=false`）→ 文件保留，guard 不介入 |
+| 34 | 删除时引擎 panic | ✅ 返回 1000（`invalid memory address`）但任务记录已消失 → `.part` 仍被删除，并按成功处理 |
+| 35 | 孤儿 `.part` 清扫 | ✅ gopeed 所有 + 无任务引用 → 删除；属主 `vinson` 的 → 保留；正在下载任务的 → 保留；一次清扫回收 1.36 GB 旧残留 |
 
 ### 已知问题
 

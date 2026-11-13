@@ -38,6 +38,7 @@ Exit codes:
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -106,6 +107,98 @@ def ensure_http(cfg):
                         "host": "", "usr": "", "pwd": ""}
         changed = True
     return changed
+
+
+def _all_tasks(base, token):
+    """Every task, whatever its status (the list endpoint paginates)."""
+    tasks, page = [], 1
+    while page <= 20:
+        res = call(base, "/api/v1/tasks?page=%d&pageSize=200" % page, token=token)
+        chunk = (res or {}).get("data") or []
+        tasks.extend(chunk)
+        if len(chunk) < 200:
+            break
+        page += 1
+    return tasks
+
+
+def owned_names(tasks):
+    """File and folder names any task still refers to."""
+    names = set()
+    for task in tasks:
+        meta = task.get("meta") or {}
+        res = meta.get("res") or {}
+        opts = meta.get("opts") or {}
+        for key in ("name",):
+            value = (res.get(key) or "").strip()
+            if value:
+                names.add(value)
+        task_name = (task.get("name") or "").strip()
+        if task_name:
+            names.add(task_name)
+        opts_name = (opts.get("name") or "").strip()
+        if opts_name:
+            names.add(opts_name)
+        for f in res.get("files") or []:
+            value = (f.get("name") or "").strip()
+            if value:
+                names.add(value)
+    return names
+
+
+def sweep_orphan_parts(base, token, directory, quiet=False, max_age=180):
+    """Remove "<name>.part" files that no task claims.
+
+    Gopeed writes in-flight data as "<name>.part" but its delete path can miss it
+    (single-file torrents) - and when the engine panics mid-delete it skips file
+    removal altogether, orphaning the partial. The tunnel removes them on the way
+    through; this sweep is the safety net for panics, crashes and tasks deleted
+    before that guard existed.
+
+    Only files this package user owns are touched, and only when they are older
+    than `max_age` seconds, so another download client's .part is never at risk.
+    """
+    if not directory or not os.path.isdir(directory):
+        return 0
+    try:
+        tasks = _all_tasks(base, token)
+    except Exception as exc:
+        if not quiet:
+            print("sweep: cannot list tasks (%s), doing nothing" % exc)
+        return 0
+    keep = owned_names(tasks)
+    now = time.time()
+    removed = 0
+    me = os.getuid() if hasattr(os, "getuid") else None
+    try:
+        entries = list(os.scandir(directory))
+    except Exception as exc:
+        if not quiet:
+            print("sweep: cannot read %s (%s)" % (directory, exc))
+        return 0
+    for entry in entries:
+        try:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            if not entry.name.endswith(".part"):
+                continue
+            stem = entry.name[:-5]
+            if stem in keep:
+                continue
+            st = entry.stat(follow_symlinks=False)
+            if me is not None and st.st_uid != me:
+                continue                      # not ours - never touch it
+            if now - st.st_mtime < max_age:
+                continue                      # still being written by someone
+            os.remove(entry.path)
+            removed += 1
+            print("sweep: removed orphan %s (%.1f MB)"
+                  % (entry.path, st.st_size / 1048576.0))
+        except Exception as exc:
+            print("sweep: cannot remove %s (%s)" % (entry.path, exc))
+    if removed and not quiet:
+        print("sweep: %d orphan .part file(s) removed" % removed)
+    return removed
 
 
 def looks_wiped(cfg):
@@ -239,6 +332,10 @@ def main():
                     help="restore maxRunning when it is 0 (0 = leave alone)")
     ap.add_argument("--heal", action="store_true",
                     help="only act when the stored config looks wiped")
+    ap.add_argument("--sweep", action="store_true",
+                    help="remove <name>.part files no task claims, then exit")
+    ap.add_argument("--sweep-interval", type=int, default=600,
+                    help="seconds between orphan sweeps while watching (0 = off)")
     ap.add_argument("--watch", type=int, default=0, metavar="SECONDS",
                     help="run a heal pass every N seconds, forever")
     ap.add_argument("--user", default="")
@@ -253,14 +350,40 @@ def main():
         "max": int(args.max_running or 0),
     }
 
+    if args.sweep:
+        base = "http://127.0.0.1:%d" % args.port
+        token = None
+        if args.password:
+            try:
+                res = call(base, "/api/web/login", "POST",
+                           {"username": args.user, "password": args.password})
+                token = (res or {}).get("data") or None
+            except Exception as exc:
+                print("login failed: %s" % exc)
+                return 2
+        return 0 if sweep_orphan_parts(base, token, args.dir) is not None else 1
+
     if not args.watch:
         return run_once(args, want, heal=args.heal)
 
+    base = "http://127.0.0.1:%d" % args.port
+    last_sweep = 0
     while True:
         try:
             run_once(args, want, heal=True, quiet=True)
         except Exception as exc:                     # never let the watchdog die
             print("watch: %s" % exc)
+        if args.sweep_interval > 0 and time.time() - last_sweep >= args.sweep_interval:
+            last_sweep = time.time()
+            try:
+                token = None
+                if args.password:
+                    res = call(base, "/api/web/login", "POST",
+                               {"username": args.user, "password": args.password})
+                    token = (res or {}).get("data") or None
+                sweep_orphan_parts(base, token, args.dir, quiet=True)
+            except Exception as exc:
+                print("watch sweep: %s" % exc)
         sys.stdout.flush()
         time.sleep(max(10, args.watch))
 

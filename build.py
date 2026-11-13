@@ -34,10 +34,10 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-36"
-CHANGELOG = ("1.9.3-36 seed protocolConfig.http and keep it alive on every start: "
-             "without it the web UI cannot parse the config, so it showed 0 for every "
-             "port and sent new tasks to \"./\" instead of the download directory")
+PKG_VERSION = "1.9.3-43"
+CHANGELOG = ("1.9.3-43 deleting a task with \"remove files\" removes the in-flight "
+             "<name>.part too, even when the engine panics after dropping the record; "
+             "orphaned .part files owned by the package user are swept every 10 minutes")
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {
