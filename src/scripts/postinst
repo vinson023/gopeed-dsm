@@ -16,6 +16,14 @@ mkdir -p "$VAR/storage" "$VAR/tmp" "$VAR/home" "$ETC" 2>/dev/null || exit 1
 VOL="$(printf '%s' "$VAR" | cut -d/ -f1-2)"
 DEFAULT_DL="${VOL}/@appshare/${PKG}/downloads"
 
+# Token the browser extension (and any REST client) sends as X-Api-Token.
+# Gopeed only accepts it next to a web password: with a blank password the API
+# is open anyway, so no token is needed (and passing -T alone would lock the
+# web UI out, because /api/web/login is only registered when a password exists).
+new_token() {
+    head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+
 if [ -f "$CONF" ]; then
     # Upgrade / reinstall with "keep data": never touch what the user set.
     # (Wizard variables are empty on a command-line upgrade, so re-writing the
@@ -29,6 +37,16 @@ if [ -f "$CONF" ]; then
     ED2K_PORT="${ED2K_PORT:-4662}"
     ED2K_UDP_PORT="${ED2K_UDP_PORT:-4672}"
     AUTO_START="${AUTO_START:-true}"
+    API_TOKEN="${API_TOKEN-}"
+    ENGINE_BIND="${ENGINE_BIND:-127.0.0.1}"
+    if [ -z "$API_TOKEN" ]; then
+        # conf written by an older version - add the token once
+        API_TOKEN="$(new_token)"
+        {
+            echo "API_TOKEN=\"${API_TOKEN}\""
+            echo "ENGINE_BIND=\"${ENGINE_BIND}\""
+        } >> "$CONF"
+    fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') existing ${CONF} kept (upgrade)" \
         >> "$VAR/install.log" 2>/dev/null
 else
@@ -42,6 +60,10 @@ else
     ED2K_PORT="${wizard_ed2k_port:-4662}"
     ED2K_UDP_PORT="${wizard_ed2k_udp_port:-4672}"
     AUTO_START="true"
+    API_TOKEN="$(new_token)"
+    # loopback by default: the dual-stack front for the engine is the tunnel on
+    # __PORT__. Set "[::]" here to expose the engine itself on every interface.
+    ENGINE_BIND="127.0.0.1"
 
     [ -n "$DOWNLOAD_DIR" ] || DOWNLOAD_DIR="$DEFAULT_DL"
 
@@ -55,10 +77,24 @@ BT_PORT="${BT_PORT}"
 ED2K_PORT="${ED2K_PORT}"
 ED2K_UDP_PORT="${ED2K_UDP_PORT}"
 AUTO_START="true"
+API_TOKEN="${API_TOKEN}"
+ENGINE_BIND="${ENGINE_BIND}"
 EOF
     chmod 600 "$CONF"
     echo "$(date '+%Y-%m-%d %H:%M:%S') ${CONF} created" \
         >> "$VAR/install.log" 2>/dev/null
+fi
+
+# The token has to be pasteable into the browser extension, so keep a readable
+# copy next to the share the package owns (File Station: @appshare/gopeed).
+if [ -n "${API_TOKEN:-}" ]; then
+    mkdir -p "${VOL}/@appshare/${PKG}" 2>/dev/null
+    cat > "${VOL}/@appshare/${PKG}/api-token.txt" <<EOF 2>/dev/null
+# Gopeed 浏览器扩展 / REST 客户端用的 X-Api-Token
+# 扩展里“添加服务器”：地址 http://<NAS地址>:__PORT__ ，令牌填下面这一行
+${API_TOKEN}
+EOF
+    chmod 644 "${VOL}/@appshare/${PKG}/api-token.txt" 2>/dev/null
 fi
 
 # Copy DSM's default certificate so the unprivileged tunnel can read it.

@@ -236,29 +236,65 @@ def proxy(conn, ctx, upstream):
         _ = tls
 
 
+def _v4_socket(port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", port))
+    s.listen(128)
+    return s
+
+
+def _v6_socket(port, v6only):
+    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, v6only)
+    s.bind(("::", port))
+    s.listen(128)
+    return s
+
+
 def bind_sockets(port):
+    """Listen on IPv4 *and* IPv6.
+
+    Preferred shape is one `[::]` socket with IPV6_V6ONLY=0: a single listener
+    that accepts both families, which is what `bindv6only=0` kernels give you.
+    Some kernels refuse to clear V6ONLY, so the flag is read back and the split
+    layout (`[::]` + `0.0.0.0`) is used only when it really is IPv6-only.
+    Returns (sockets, description).
+    """
+    try:
+        v6 = _v6_socket(port, 0)
+        try:
+            v6only = v6.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY)
+        except OSError:
+            v6only = 0
+        if v6only == 0:
+            return [v6], "ipv4+ipv6 (dual-stack)"
+        # V6ONLY could not be cleared - keep IPv6, add a real IPv4 socket.
+        socks = []
+        try:
+            socks.append(_v4_socket(port))
+        except Exception as exc:
+            log("tunnel: ipv4 bind failed (%s)" % exc)
+        socks.append(v6)
+        return socks, "ipv4+ipv6 (split)"
+    except Exception as exc:
+        log("tunnel: dual-stack bind failed (%s)" % exc)
+
     socks = []
     try:
-        v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        v4.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        v4.bind(("0.0.0.0", port))
-        v4.listen(128)
-        socks.append(v4)
+        socks.append(_v4_socket(port))
     except Exception as exc:
         log("tunnel: ipv4 bind failed (%s)" % exc)
     try:
-        v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        v6.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-        except Exception:
-            pass
-        v6.bind(("::", port))
-        v6.listen(128)
-        socks.append(v6)
+        socks.append(_v6_socket(port, 1))
     except Exception as exc:
         log("tunnel: ipv6 bind failed (%s)" % exc)
-    return socks
+    if len(socks) == 2:
+        return socks, "ipv4+ipv6 (split)"
+    if socks:
+        return socks, "ipv4 only"
+    return [], "none"
 
 
 def accept_loop(srv, ctx, upstream):
@@ -280,13 +316,13 @@ def main():
     key = os.environ.get("KEY_FILE", "")
 
     ctx = load_context(cert, key) if cert and key else None
-    socks = bind_sockets(port)
+    socks, families = bind_sockets(port)
     if not socks:
         log("tunnel: cannot bind port %d" % port)
         sys.exit(1)
 
-    log("tunnel: listening on %d -> 127.0.0.1:%d (tls=%s, cors=on)"
-        % (port, upstream_port, "yes" if ctx else "no"))
+    log("tunnel: listening on %d (%s) -> 127.0.0.1:%d (tls=%s, cors=on)"
+        % (port, families, upstream_port, "yes" if ctx else "no"))
 
     upstream = ("127.0.0.1", upstream_port)
     for idx, srv in enumerate(socks):

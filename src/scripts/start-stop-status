@@ -29,6 +29,10 @@ BT_PORT="51413"
 ED2K_PORT="4662"
 ED2K_UDP_PORT="4672"
 AUTO_START="true"
+API_TOKEN=""
+# Where the engine itself binds while the tunnel fronts it. Loopback keeps the
+# raw engine off the LAN; set "[::]" in gopeed.conf to expose it dual-stack.
+ENGINE_BIND="127.0.0.1"
 
 INTERNAL_PORT=$((WEB_PORT + 1))
 
@@ -173,7 +177,7 @@ start_service() {
 
     local addr port
     if [ "$use_tunnel" = "1" ]; then
-        addr="127.0.0.1"
+        addr="${ENGINE_BIND:-127.0.0.1}"
         port="$INTERNAL_PORT"
     else
         addr="0.0.0.0"
@@ -200,17 +204,20 @@ JSON
 
     log "starting: public=${WEB_PORT} bind=${addr}:${port} tunnel=${use_tunnel} downloads=${DOWNLOAD_DIR} bt=${BT_PORT} ed2k=${ED2K_PORT}/${ED2K_UDP_PORT}"
 
+    # -T only makes sense together with -u/-p: the token is validated *instead*
+    # of the web session, and passing it alone would leave /api/web/login
+    # unregistered, locking the browser UI out.
+    local -a eargs=(-A "$addr" -P "$port" -d "$VAR/storage" -c "$VAR/config.json")
+    if [ -n "$WEB_PASS" ]; then
+        eargs+=(-u "$WEB_USER" -p "$WEB_PASS")
+        [ -n "$API_TOKEN" ] && eargs+=(-T "$API_TOKEN")
+    fi
+
     (
         cd "$DEST" || exit 1
         export GOPEED_TEMP_DIR="$VAR/tmp"
         export HOME="$VAR/home"
-        if [ -n "$WEB_PASS" ]; then
-            nohup "$BIN" -A "$addr" -P "$port" -d "$VAR/storage" -c "$VAR/config.json" \
-                -u "$WEB_USER" -p "$WEB_PASS" >> "$LOG" 2>&1 &
-        else
-            nohup "$BIN" -A "$addr" -P "$port" -d "$VAR/storage" -c "$VAR/config.json" \
-                >> "$LOG" 2>&1 &
-        fi
+        nohup "$BIN" "${eargs[@]}" >> "$LOG" 2>&1 &
         echo $! > "$PID_FILE"
     )
 
@@ -240,6 +247,9 @@ JSON
     fi
 
     sync_settings "$port"
+    if [ -n "$API_TOKEN" ] && [ -n "$WEB_PASS" ]; then
+        log "browser extension: address http://<nas>:${WEB_PORT} token ${API_TOKEN}"
+    fi
     log "started engine=$(cat "$PID_FILE" 2>/dev/null) tunnel=$(cat "$TUNNEL_PID" 2>/dev/null || echo none)"
     return 0
 }

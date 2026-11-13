@@ -589,6 +589,70 @@ all language names fully covered
 另外给所有字体 URL 加了 `?v=__VERSION__`（`build.py` 注入版本号）：浏览器对
 404 也可能做启发式缓存，加版本戳能保证升级后一定重新拉取。
 
+## 三之八、浏览器扩展连不上 / 双栈监听（1.9.3-29）
+
+### 1. 为什么扩展「打开后什么都没有」
+
+Gopeed 的浏览器扩展不走网页端口，它把 `http://<IP>:<端口>` + **API Token** 填进
+「添加服务器」，然后直接 `POST /api/v1/tasks`，鉴权用 `X-Api-Token` 头。
+
+我们的套件默认只开了 Web 登录（`-u/-p`）。此时 `pkg/rest/server.go` 的鉴权中间件对
+`/api/*` 只有两条路：`Authorization: Bearer <login token>` 或会话 Cookie。扩展两样都
+不发，于是每个请求都是 `401 unauthorized`，弹窗里自然一片空白 —— 看起来像网络问题。
+
+修法：给引擎加 `-T <token>`（`X-Api-Token` 校验），token 在 `postinst` 里生成一次，
+写进 `gopeed.conf` 的 `API_TOKEN`，升级保留；启动时日志打一行方便抄：
+
+```
+2026-11-13 13:38:16 - browser extension: address http://<nas>:38099 token 842371b7...
+```
+
+同时写一份明文到共享目录 `@appshare/gopeed/api-token.txt`，File Station 里能直接打开。
+
+```bash
+# start-stop-status
+local -a eargs=(-A "$addr" -P "$port" -d "$VAR/storage" -c "$VAR/config.json")
+if [ -n "$WEB_PASS" ]; then
+    eargs+=(-u "$WEB_USER" -p "$WEB_PASS")
+    [ -n "$API_TOKEN" ] && eargs+=(-T "$API_TOKEN")
+fi
+```
+
+> **`-T` 必须和 `-u/-p` 一起用**：`/api/web/login` 只在有密码时才注册，只给 `-T`
+> 会让网页界面（和 `api.cgi`）没有任何登录入口，直接 401 打不开。
+> 所以密码留空时不传 `-T` —— 那时 API 本来就是开放的，扩展不填 token 也能连。
+
+扩展里这样填：
+
+| 字段 | 值 |
+|---|---|
+| 服务地址 | `http://<NAS地址>:38099`（IPv6 写法 `http://[2409:...]:38099`） |
+| 令牌 | `gopeed.conf` 的 `API_TOKEN`，或 `@appshare/gopeed/api-token.txt` |
+
+实测：带正确 token `200`，不带 / 带错 `401`，网页登录（token 72 字符）同时有效。
+
+### 2. 双栈监听的真实情况
+
+| 端口 | 绑定 | 结果 |
+|---|---|---|
+| 38099 隧道 | 单个 `[::]`（`IPV6_V6ONLY=0`） | ✅ `tcp6 :::38099`，v4/v6 同一个 socket |
+| 38100 引擎 | `ENGINE_BIND`，默认 `127.0.0.1` | 仅本机；改 `"[::]"` 即 `:::38100`（已实测） |
+| 51413 BT | anacrolix/torrent | ✅ `tcp/udp 0.0.0.0:51413` + `tcp6/udp6 :::51413` |
+| 4662 / 4672 ED2K | goed2k | ✅ `tcp6 :::4662`、`udp6 :::4672`（v6 socket 收 v4） |
+
+隧道原来的写法是「先绑 `0.0.0.0`，再绑 `[::]` + `V6ONLY=1`」；如果内核不允许设置
+`V6ONLY`（或默认值就是 0），第二步会 `EADDRINUSE`，日志里只剩 ipv4，**IPv6 就静默
+失效**。现在改成：先试一个 `[::]` + `V6ONLY=0` 的双栈 socket，读回 `V6ONLY` 确认真的
+是双栈；不行再退回「`[::]`(v6only) + `0.0.0.0`」；再不行才只绑 v4。启动日志直接写清：
+
+```
+tunnel: listening on 38099 (ipv4+ipv6 (dual-stack)) -> 127.0.0.1:38100
+```
+
+`ENGINE_BIND` 是给「确实要拿 38100 直连」的场景准备的（例如自己写脚本打 API）。
+默认保持 loopback：38099 已经带 CORS、能同端口 http/https，把 38100 放出去只是
+多一个没有 CORS、没有证书的入口。
+
 ## 四、启动参数
 
 ```
@@ -668,6 +732,10 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 | 17 | 空密码 | ✅ `WEB_PASS=""` 时进程无 `-u/-p`，`GET /api/v1/config` 免 token 返回 200；端口同步在无鉴权下同样生效 |
 | 18 | 空密码回填 | ✅ 用 `wizard_web_pass=` 跑 `postinst`，生成的 conf 里是 `WEB_PASS=""`（不再回落 `gopeed`） |
 | 19 | 离线字体 | ✅ 228 个 woff2 分片经 DSM nginx 全部 200（`/webman/3rdparty/gopeed/web/assets/gstatic/...`），含 `?v=1.9.3-28` 版本戳 |
+| 20 | **扩展 API Token** | ✅ `-T` 生效：带正确 `X-Api-Token` 200、不带/带错 401；同一时刻 `Authorization: Bearer`（网页登录）也 200 |
+| 21 | 38099 双栈 | ✅ 单个 `[::]`+`V6ONLY=0` socket → `tcp6 :::38099`；`http://[::1]:38099/api/v1/info` 带 token 200 |
+| 22 | BT / ED2K 双栈 | ✅ BT 51413：`tcp/udp 0.0.0.0` + `tcp6/udp6 :::`；ED2K：`tcp6 :::4662`、`udp6 :::4672` |
+| 23 | `ENGINE_BIND` | ✅ 改 `[::]` → `:::38100`；改回 `127.0.0.1` → 仅本机 |
 
 ### 已知问题
 

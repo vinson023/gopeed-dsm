@@ -68,6 +68,26 @@ sudo synopkg restart gopeed
 
 没有证书时隧道自动降级为纯 HTTP，不影响局域网使用。
 
+## 浏览器扩展
+
+装 [Gopeed 浏览器扩展](https://chromewebstore.google.com/detail/gopeed/mijpgljlfcapndmchhjffkpckknofcnd)后，
+在扩展里「添加服务器」：
+
+| 字段 | 值 |
+|---|---|
+| 服务地址 | `http://<NAS地址>:38099`（IPv6：`http://[2409:...]:38099`） |
+| 令牌 | 套件安装时生成的 `API_TOKEN` |
+
+令牌去哪找（两者等价）：
+
+- DSM 里 File Station 打开 `@appshare/gopeed/api-token.txt`
+- `sudo grep API_TOKEN /var/packages/gopeed/etc/gopeed.conf`
+- `gopeed.log` 里的 `browser extension: address ... token ...`
+
+> 扩展走 **`X-Api-Token`**，和网页登录是两套凭据：网页仍是账号密码（或留空 = 不登录），
+> 扩展填令牌即可。**密码留空时不用填令牌**（那时 API 本身就是开放的）。
+> 注意扩展需要能直连 38099：IPv4/IPv6 都支持，公网访问要自己放行防火墙。
+
 ## 构建
 
 需要 Python 3；不需要 Synology 工具链（`.spk` 就是一个固定布局的 tar.gz）。
@@ -146,6 +166,9 @@ python build.py --port 38123        # 换端口
 8. **`.spk` 必须是未压缩的 tar，内部用 GNU 格式**：套件中心对 gzip 外壳和 PAX 扩展头
    都报「套件文件格式不正确」。只有里面的 `package.tgz` 才压缩。这条最容易踩，
    详见 [docs/dsm-port.md](docs/dsm-port.md) 第三节。
+9. **双栈只在一个地方需要操心**：`bin/gopeed-tunnel.py` 用单个 `[::]` + `IPV6_V6ONLY=0`
+   socket，v4/v6 共用 38099；BT 与 ED2K 由引擎自己双栈监听。引擎本体（38100）默认
+   只听 `127.0.0.1`，要直连就把 `gopeed.conf` 的 `ENGINE_BIND` 改成 `"[::]"`。
 
 ## 已知限制
 
