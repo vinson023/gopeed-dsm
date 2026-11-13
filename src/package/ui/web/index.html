@@ -50,10 +50,24 @@
 
     var API_CGI = "/webman/3rdparty/gopeed/api.cgi";
 
+    // Route the bundle's own REST calls through the same-origin CGI.
+    //
+    // Only *our* origin may be rewritten. The bundle also calls absolute URLs
+    // that happen to contain "api/" - the extension store and the update check
+    // (https://gopeed.com/api/...) - and rewriting those pointed them at the
+    // engine, which knows nothing about them: they came back 500 and the store
+    // rendered "No matching extensions found".
     function rewrite(u) {
       if (typeof u !== "string" || u.indexOf("api/") < 0) { return u; }
       if (u.indexOf("api.cgi") >= 0) { return u; }        // already routed
-      var m = u.match(/^(?:https?:\/\/[^\/]*)?\/?(api\/.*)$/);
+
+      var path = u;
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) || u.slice(0, 2) === "//") {
+        var origin = location.origin;
+        if (u.indexOf(origin + "/") !== 0) { return u; }  // someone else's API
+        path = u.slice(origin.length);
+      }
+      var m = path.match(/^\/?(api\/.*)$/);
       return m ? API_CGI + "/" + m[1] : u;
     }
 

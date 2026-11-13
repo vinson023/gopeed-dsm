@@ -667,6 +667,70 @@ tunnel: listening on 38099 (ipv4+ipv6 (dual-stack)) -> 127.0.0.1:38100
 默认保持 loopback：38099 已经带 CORS、能同端口 http/https，把 38100 放出去只是
 多一个没有 CORS、没有证书的入口。
 
+## 三之九、扩展商店一片空白（1.9.3-32）
+
+现象：网页里的「扩展 → 市场」永远显示「没有匹配的扩展」，直接开
+`http://<nas>:38099` 却正常；控制台里 `GET /api/v1/proxy` 全是 500。
+
+两个叠加的原因：
+
+**1. `api.cgi` 丢了一个自定义头**
+
+新的 web 包里，跨域资源（扩展商店的 JSON、扩展图标）不是浏览器直接抓，而是走引擎的
+`/api/v1/proxy`，真实地址放在 **`X-Target-Uri`** 头里：
+
+```js
+p.n(0,"X-Target-Uri",a);  q=p.aQQ(0,"/api/v1/proxy?t="+Date.now(),b,c)
+```
+
+我们的同源代理 `api.cgi` 只转发了一张白名单里的头，`X-Target-Uri` 不在里面 → 引擎收到
+没有目标的 proxy 请求 → 500 → 市场空。直连 38099 之所以正常，是因为隧道是裸转发，
+所有头都过去了。
+
+修法就是把头加进白名单：
+
+```python
+PASS_HEADERS = {
+    ...
+    "HTTP_X_TARGET_URI": "X-Target-Uri",   # 商店/图标走 proxy 时必需
+}
+```
+
+验证（真机）：
+
+```bash
+# 引擎直连，带头 → 200 + 商店 JSON
+curl -H 'X-Target-Uri: https://gopeed.com/api/extensions?view=summary&page=1&limit=2' \
+     'http://127.0.0.1:38099/api/v1/proxy?t=1'
+# 经 api.cgi：修前 500，修后 200
+curl -H 'X-Target-Uri: https://gopeed.com/...' \
+     'http://127.0.0.1:5000/webman/3rdparty/gopeed/api.cgi/api/v1/proxy?t=1'
+```
+
+修好后在 DSM 窗口里打开「扩展 → 市场」，是一次 24 个 `/api/v1/proxy` 请求全 200，
+卡片、图标、Star/下载数都出来了。**顺带的好处**：商店内容由 NAS 去取，
+客户端就算连不上 gopeed.com / raw.githubusercontent.com 也能看。
+
+**2. index.html 的 rewrite 把别人的 API 也改了**
+
+原来的同源改写是：
+
+```js
+var m = u.match(/^(?:https?:\/\/[^\/]*)?\/?(api\/.*)$/);   // 任意 host 都匹配
+return m ? API_CGI + "/" + m[1] : u;
+```
+
+`https://gopeed.com/api/extensions` 也含 `api/`，于是被改写成
+`/webman/3rdparty/gopeed/api.cgi/api/extensions` → 打到引擎上 → 500
+（`initCheckUpdate error` 也是同一个原因）。现在只改**自己 origin** 的 URL：
+
+```js
+if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) || u.slice(0,2) === "//") {
+    if (u.indexOf(location.origin + "/") !== 0) { return u; }   // 别人的 API，放过
+    path = u.slice(location.origin.length);
+}
+```
+
 ## 四、启动参数
 
 ```
@@ -752,6 +816,7 @@ body="$(printf '%s' "$data" | sed 's#"downloadDir":"[^"]*"#"downloadDir":"'"$DL"
 | 23 | `ENGINE_BIND` | ✅ 改 `[::]` → `:::38100`；改回 `127.0.0.1` → 仅本机 |
 | 24 | `postinst` 五条路径 | ✅ A 命令行升级→保留密码/目录/端口并补 token；B 勾选覆盖+空密码→`WEB_PASS=""`；C 全新+空密码→空；D 全新命令行→空+默认共享目录；E 老 conf 无 token→自动补 |
 | 25 | 空密码真机生效 | ✅ `WEB_PASS=""` 重启后进程无 `-u/-p`（也没有 `-T`），`GET /api/v1/config` 免 token 200、`/` 200 |
+| 26 | 扩展商店（1.9.3-32） | ✅ `api.cgi` 转发 `X-Target-Uri` 后 `/api/v1/proxy` 由 500 → 200；DSM 窗口里「市场」渲染出 9+ 张卡片（24 个 proxy 请求全 200）；同源下不再有请求被误改写到 api.cgi |
 
 ### 已知问题
 

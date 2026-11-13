@@ -34,6 +34,11 @@ UPSTREAM = "http://127.0.0.1:__PORT__"
 PASS_HEADERS = {
     "HTTP_AUTHORIZATION": "Authorization",
     "HTTP_X_API_TOKEN": "X-Api-Token",
+    # The web bundle fetches cross-origin images and the extension store through
+    # the engine's /api/v1/proxy, passing the real URL in this header. Dropping
+    # it made every such request fail (500) - the store then rendered as an
+    # empty "no matching extensions" list.
+    "HTTP_X_TARGET_URI": "X-Target-Uri",
     "HTTP_ACCEPT": "Accept",
     "HTTP_ACCEPT_LANGUAGE": "Accept-Language",
     "HTTP_USER_AGENT": "User-Agent",
