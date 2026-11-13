@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-22"
-CHANGELOG = "1.9.3-22 bundle the Noto Sans SC fallback shards so Chinese text renders without internet access"
+PKG_VERSION = "1.9.3-25"
+CHANGELOG = "1.9.3-25 upgrades keep the existing config; a non-writable download dir falls back to the package share instead of blocking startup"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {

@@ -439,6 +439,57 @@ sudo synopkg restart gopeed
 直接阻断。所以 https 桌面必须配受信任证书（Let's Encrypt 等）。
 只在内网用 `http://nas:5000` 打开 DSM 则没有这个限制。
 
+## 三之六、两个和「配置」有关的坑（都踩过）
+
+### 1. `postinst` 不能无条件重写 conf
+
+最初 `postinst` 每次都 `cat > gopeed.conf`，用向导变量生成配置。命令行 / 套件中心
+**升级**时向导变量是空的，于是账号、端口、下载目录全被重置成默认值 ——
+表现为"升级后设置没了"。
+
+正确做法：只在 conf 不存在（首次安装）时生成，升级时原样保留：
+
+```bash
+if [ -f "$CONF" ]; then
+    . "$CONF"                       # 读回用户设置，后面 chown 之类继续用
+else
+    cat > "$CONF" <<EOF
+...
+EOF
+fi
+```
+
+卸载时选「保留配置」则 conf 还在，重装也会沿用；选「全部清空」才会重新生成。
+
+### 2. 下载目录不可写不能当成致命错误
+
+DSM 共享文件夹的权限是 **ACL**，`ls -l` 显示 `drwxrwxrwx+` 不代表套件用户能写
+（那个 `+` 就是 ACL）。用户如果在向导里填了 `/volume1/downloads` 却没在
+「套件中心 → 套件 → 权限」里授权，`test -w` 就是失败。
+
+早期版本直接 `return 1`，导致**整个套件起不来**（`status: start_failed`）。
+正确做法是回退：
+
+```bash
+if [ -n "$DOWNLOAD_DIR" ] && [ ! -w "$DOWNLOAD_DIR" ]; then
+    log "download dir not writable: $DOWNLOAD_DIR ...; using the package share instead"
+    DOWNLOAD_DIR=""                 # 触发回退
+fi
+[ -n "$DOWNLOAD_DIR" ] || DOWNLOAD_DIR="${VOL}/@appshare/${PKG}/downloads"
+```
+
+授权可以事后补，用 DSM 自带的 ACL 工具（root）：
+
+```bash
+sudo /usr/syno/bin/synoacltool -add /volume1/downloads \
+     "user:gopeed:allow:rwxpdDaARWc--:fd--"
+sudo /usr/syno/bin/synoacltool -get /volume1/downloads     # 确认
+```
+
+> 注意 `postinst` 里不要用 `su -c "test -w"` 预检：它和真实 ACL 结果不一致
+> （实测把可写目录判成只读）。运行时检查放在 `start-stop-status`，那里本身
+> 就以套件用户身份运行。
+
 ## 四、启动参数
 
 ```

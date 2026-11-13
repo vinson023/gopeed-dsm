@@ -155,12 +155,21 @@ start_service() {
     fi
     mkdir -p "$VAR/storage" 2>/dev/null
 
+    # A wrong download dir must not keep the service down: fall back to the
+    # package share (always writable) and record why.
+    if [ -n "$DOWNLOAD_DIR" ]; then
+        [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
+        if [ ! -w "$DOWNLOAD_DIR" ]; then
+            log "download dir not writable: ${DOWNLOAD_DIR} (grant it in Package Center > ${PKG} > Permission); using the package share instead"
+            DOWNLOAD_DIR=""
+        fi
+    fi
     if [ -z "$DOWNLOAD_DIR" ]; then
         DOWNLOAD_DIR="$(printf '%s' "$VAR" | cut -d/ -f1-2)/@appshare/${PKG}/downloads"
     fi
     [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" 2>/dev/null
     if [ ! -w "$DOWNLOAD_DIR" ]; then
-        log "download dir not writable: ${DOWNLOAD_DIR} (grant it in Package Center > ${PKG} > Permission)"
+        log "fallback download dir not writable either: ${DOWNLOAD_DIR}"
         return 1
     fi
 
