@@ -89,7 +89,7 @@ sudo synopkg restart gopeed
 
 | 字段 | 值 |
 |---|---|
-| 服务地址 | `http://<NAS地址>:38099`（IPv6：`http://[2409:...]:38099`） |
+| 服务地址 | `http://<NAS地址>:38099`（IPv6：`http://[<公网 IPv6>]:38099`） |
 | 令牌 | 套件安装时生成的 `API_TOKEN` |
 
 令牌去哪找（两者等价）：
@@ -210,3 +210,13 @@ python build.py --port 38123        # 换端口
 
 打包脚本与套件配置以 **GPL-3.0** 发布；`src/LICENSE` 是随包分发所必需的 Gopeed 许可证。
 Gopeed 版权归 [GopeedLab](https://github.com/GopeedLab/gopeed) 所有。
+
+### 第三方组件
+
+| 组件 | 许可 |
+|---|---|
+| Gopeed 引擎与 Web 前端（`src/package/ui/web/`） | GPL-3.0 |
+| Flutter / CanvasKit（`ui/web/canvaskit/`） | BSD-3-Clause |
+| Noto Sans 字体分片（`ui/web/assets/gstatic/`，SC / KR / Arabic / Tamil / Roboto） | SIL Open Font License 1.1 |
+
+> 本项目是非官方移植，与 Gopeed 官方无关；问题请提到本仓库的 Issues。

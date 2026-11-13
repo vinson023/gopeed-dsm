@@ -618,7 +618,7 @@ Gopeed 的浏览器扩展不走网页端口，它把 `http://<IP>:<端口>` + **
 写进 `gopeed.conf` 的 `API_TOKEN`，升级保留；启动时日志打一行方便抄：
 
 ```
-2026-11-13 13:38:16 - browser extension: address http://<nas>:38099 token 842371b7...
+2026-11-13 13:38:16 - browser extension: address http://<nas>:38099 token 3f9c1a2b...
 ```
 
 同时写一份明文到共享目录 `@appshare/gopeed/api-token.txt`，File Station 里能直接打开。
@@ -640,7 +640,7 @@ fi
 
 | 字段 | 值 |
 |---|---|
-| 服务地址 | `http://<NAS地址>:38099`（IPv6 写法 `http://[2409:...]:38099`） |
+| 服务地址 | `http://<NAS地址>:38099`（IPv6 写法 `http://[<公网 IPv6>]:38099`） |
 | 令牌 | `gopeed.conf` 的 `API_TOKEN`，或 `@appshare/gopeed/api-token.txt` |
 
 实测：带正确 token `200`，不带 / 带错 `401`，网页登录（token 72 字符）同时有效。
