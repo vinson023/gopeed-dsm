@@ -148,7 +148,7 @@ Ext.define("SYNO.SDS.Gopeed.MainWindow", {
             items: [{
                 xtype: "box",
                 autoEl: { tag: "iframe",
-                          src: "/webman/3rdparty/gopeed/app/index.html?v=" + Date.now(),
+                          src: "/webman/3rdparty/gopeed/web/index.html?v=" + Date.now(),
                           style: "width:100%;height:100%;border:none;" }
             }]
         }, cfg)]);
@@ -168,7 +168,7 @@ Ext.define("SYNO.SDS.Gopeed.MainWindow", {
 ```bash
 ls -ld /usr/syno/synoman/webman/3rdparty/gopeed          # 软链
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/Gopeed.js
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/app/index.html
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/webman/3rdparty/gopeed/web/index.html
 ```
 
 ## 三之三、CSP：为什么 iframe 必须同源（这是最关键的一条）
@@ -200,8 +200,8 @@ X-Frame-Options: SAMEORIGIN
 所以唯一可行的结构是「全部走 DSM 自己的 origin」：
 
 ```
-iframe（同源）  /webman/3rdparty/gopeed/app/index.html
-      │  静态资源由 DSM nginx 直接从 target/ui/app/ 提供
+iframe（同源）  /webman/3rdparty/gopeed/web/index.html
+      │  静态资源由 DSM nginx 直接从 target/ui/web/ 提供
       ▼
    Gopeed 前端（Flutter）
       │  XHR/fetch → /webman/3rdparty/gopeed/api.cgi/api/...
@@ -270,8 +270,8 @@ for p in index.html flutter_bootstrap.js main.dart.js manifest.json favicon.png 
          assets/AssetManifest.bin assets/FontManifest.json \
          assets/fonts/MaterialIcons-Regular.otf \
          icons/Icon-192.png icons/Icon-512.png; do
-    mkdir -p "ui/app/$(dirname $p)"
-    curl -s -o "ui/app/$p" "$B/$p"
+    mkdir -p "ui/web/$(dirname $p)"
+    curl -s -o "ui/web/$p" "$B/$p"
 done
 # 注意 /index.html 会 301 到 /，要 -L 或者直接抓 /
 ```
@@ -311,7 +311,41 @@ query = os.environ["QUERY_STRING"]     # status=done
 
 > 只允许 `/api/` 前缀，避免变成任意 URL 代理。
 
-**4）关闭 Flutter 的 service worker**
+**4）必须同时带 `canvaskit/chromium/`**
+
+Flutter 在 Chrome/Edge（blink 引擎）下不会加载 `canvaskit/canvaskit.js`，
+而是动态 import `canvaskit/chromium/canvaskit.js` + `chromium/canvaskit.wasm`。
+只抓 `canvaskit/` 根目录那两个文件，控制台会报：
+
+```
+Failed to fetch dynamically imported module: .../canvaskit/chromium/canvaskit.js
+TypeError: Failed to execute 'compile' on 'WebAssembly': HTTP status code is not ok
+```
+
+窗口就是空白。所以抓资源时这两个目录都要拿：
+
+| 浏览器 | 用到的文件 |
+|---|---|
+| Chrome / Edge | `canvaskit/chromium/canvaskit.js` + `.wasm`（5.7 MB） |
+| Firefox / Safari | `canvaskit/canvaskit.js` + `.wasm`（7.2 MB） |
+
+**5）关闭 Flutter 的 service worker，并换一个目录名**
+
+`flutter_bootstrap.js` 末尾 `_flutter.loader.load({ serviceWorkerSettings: ... })`
+改成 `_flutter.loader.load({})`。
+
+但**仅仅禁用不够**：早期版本已经注册过的 SW 会一直留在浏览器里，
+按旧的资源清单返回缓存（其中没有 `chromium/`），更新的文件也不会生效。
+最稳妥的做法是**把 bundle 目录换个名字**（本项目从 `app/` 改成 `web/`），
+旧 SW 的 scope 是 `/webman/3rdparty/gopeed/app/`，新路径根本不在它的 scope 内。
+index.html 里再补一句主动注销，双保险：
+
+```javascript
+navigator.serviceWorker.getRegistrations().then(function (rs) {
+  rs.forEach(function (r) { r.unregister(); });
+});
+caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); });
+```
 
 `flutter_bootstrap.js` 末尾 `_flutter.loader.load({ serviceWorkerSettings: ... })`
 改成 `_flutter.loader.load({})`。否则子目录下注册的 SW 会把旧版本缓存住。

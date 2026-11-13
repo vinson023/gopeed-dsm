@@ -20,25 +20,41 @@
   <!--
     DSM integration shim.
 
-    This page is served by DSM's own nginx from /webman/3rdparty/gopeed/app/,
-    so it is SAME ORIGIN with the DSM desktop. That is required because DSM
-    sends `frame-src 'self'` - an iframe pointing at http://nas:38099 (another
-    port = another origin) is blocked by the browser.
+    This bundle is served by DSM's own nginx from /webman/3rdparty/gopeed/app/,
+    i.e. from the DSM origin itself. That is mandatory: DSM sends
+    `frame-src 'self'`, and 'self' includes the port, so an iframe pointing at
+    http://nas:38099 (a different origin) is refused and the window stays blank.
 
-    The static bundle lives here, but the engine still listens on 38099.
-    DSM's CSP allows `connect-src http: https:`, so XHR/fetch to that port is
-    fine; only the URLs have to be rewritten, because Gopeed asks for both
-    "api/v1/x" (relative) and "/api/v1/x" (absolute root).
+    The REST engine still listens on 38099, so API calls are routed through
+    /webman/3rdparty/gopeed/api.cgi/<path> - a CGI that DSM executes in this
+    same directory and that forwards to 127.0.0.1:38099. Everything therefore
+    stays on one origin, which is why it works over http and https alike, with
+    no certificate, no TLS tunnel and no CORS.
   -->
   <script>
   (function () {
-    var PORT = "__PORT__";
-    var API_ORIGIN = location.protocol + "//" + location.hostname + ":" + PORT;
+    // Older builds registered Flutter's service worker here; it caches the
+    // asset list and would keep serving a stale bundle. Remove it for good.
+    try {
+      if (navigator.serviceWorker) {
+        navigator.serviceWorker.getRegistrations().then(function (rs) {
+          rs.forEach(function (r) { r.unregister(); });
+        });
+      }
+      if (window.caches && caches.keys) {
+        caches.keys().then(function (ks) {
+          ks.forEach(function (k) { caches.delete(k); });
+        });
+      }
+    } catch (e) {}
+
+    var API_CGI = "/webman/3rdparty/gopeed/api.cgi";
 
     function rewrite(u) {
       if (typeof u !== "string" || u.indexOf("api/") < 0) { return u; }
+      if (u.indexOf("api.cgi") >= 0) { return u; }        // already routed
       var m = u.match(/^(?:https?:\/\/[^\/]*)?\/?(api\/.*)$/);
-      return m ? API_ORIGIN + "/" + m[1] : u;
+      return m ? API_CGI + "/" + m[1] : u;
     }
 
     var open = XMLHttpRequest.prototype.open;

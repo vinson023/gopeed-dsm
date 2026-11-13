@@ -2,7 +2,7 @@
  * DSM 7 desktop integration for Gopeed.
  *
  * The window hosts an iframe pointing at a SAME-ORIGIN path:
- *     /webman/3rdparty/gopeed/app/index.html
+ *     /webman/3rdparty/gopeed/web/index.html
  *
  * Same origin is mandatory: DSM sends `Content-Security-Policy: frame-src
  * 'self' ...`, and 'self' includes the port. An iframe to http://nas:38099
@@ -44,7 +44,7 @@ Ext.define("SYNO.SDS.Gopeed.MainWindow", {
                 itemId: "appframe",
                 autoEl: {
                     tag: "iframe",
-                    src: "/webman/3rdparty/gopeed/app/index.html?v=" + Date.now(),
+                    src: "/webman/3rdparty/gopeed/web/index.html?v=" + Date.now(),
                     frameborder: "0",
                     style: "width:100%; height:100%; border:none;"
                 }

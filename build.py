@@ -34,8 +34,8 @@ DIST = os.environ.get("GOPEED_DIST_DIR") or (
 )
 
 UPSTREAM_VERSION = "1.9.3"
-PKG_VERSION = "1.9.3-17"
-CHANGELOG = "1.9.3-17 same-origin web UI inside the DSM window (CORS tunnel)"
+PKG_VERSION = "1.9.3-20"
+CHANGELOG = "1.9.3-20 serve the bundle from /web/ so a stale service worker from older builds cannot shadow it"
 
 # DSM arch value -> goarch used by the upstream release assets
 ARCHES = {
@@ -51,6 +51,7 @@ def is_exec(arcname):
         arcname.startswith("scripts/")
         or arcname in ("bin/gopeed", "bin/gopeed-tunnel.py")
         or arcname.endswith(".sh")
+        or arcname.endswith(".cgi")
     )
 
 

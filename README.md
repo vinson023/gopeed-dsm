@@ -133,8 +133,8 @@ python build.py --port 38123        # 换端口
    `/usr/syno/synoman/webman/3rdparty/gopeed/`，`dsmappname` 指向 Ext 应用类。
    DSM 的响应头带 `Content-Security-Policy: ... frame-src 'self' ...`，
    而 `'self'` 包含**端口** —— 指向 `http://nas:38099` 的 iframe 会被浏览器直接拦掉，
-   窗口全白。所以前端整包（`ui/app/`，12 MB）随套件分发，iframe 走同源路径
-   `/webman/3rdparty/gopeed/app/index.html`；API 也走同源
+   窗口全白。所以前端整包（`ui/web/`，12 MB）随套件分发，iframe 走同源路径
+   `/webman/3rdparty/gopeed/web/index.html`；API 也走同源
    `/webman/3rdparty/gopeed/api.cgi/api/...`（DSM 会在该目录下执行 `.cgi`），
    由 `ui/api.cgi` 转发到 127.0.0.1:38099。
    **http 和 https 因此都能用**，不需要证书、TLS 隧道或 CORS ——
@@ -146,7 +146,7 @@ python build.py --port 38123        # 换端口
 ## 已知限制
 
 - **端口不能安装时选**：`adminport` 写在 `INFO` 里，改端口 = 重新构建 + 卸载重装。
-- **前端资源随包分发**：因为必须同源，`ui/app/` 里带了一份完整的 Flutter web 构建
+- **前端资源随包分发**：因为必须同源，`ui/web/` 里带了一份完整的 Flutter web 构建
   （约 12 MB），套件体积因此从 38 MB 涨到 42 MB。
 - **API 走 CGI 转发**：每个请求会 fork 一个 `api.cgi` 进程（Python 约 25 ms）。
   Gopeed 前端是定时轮询，实测无感；如果将来做高频实时推送需要另想办法。
